@@ -96,6 +96,7 @@ func (a *APIInstaller) Install() ([]metav1.APIResource, *restful.WebService, []e
 	ws := a.newWebService()
 
 	// Register the paths in a deterministic (sorted) order to get a deterministic swagger spec.
+	// 这里的 path 是指 kubernetes 中的资源对象,如 pods,
 	paths := make([]string, len(a.group.Storage))
 	var i int = 0
 	for path := range a.group.Storage {
@@ -104,6 +105,7 @@ func (a *APIInstaller) Install() ([]metav1.APIResource, *restful.WebService, []e
 	}
 	sort.Strings(paths)
 	for _, path := range paths {
+		// 假设这里 path = "pods",则 a.group.Storage[path] = podStorage
 		apiResource, err := a.registerResourceHandlers(path, a.group.Storage[path], ws)
 		if err != nil {
 			errors = append(errors, fmt.Errorf("error in registering resource: %s, %v", path, err))
@@ -228,6 +230,7 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 	}
 
 	// what verbs are supported by the storage, used to know what verbs we support per path
+	// 1. 根据 storage 实现了哪些方法,判断是否对 storage 添加哪些 action
 	creater, isCreater := storage.(rest.Creater)
 	namedCreater, isNamedCreater := storage.(rest.NamedCreater)
 	lister, isLister := storage.(rest.Lister)
@@ -391,6 +394,7 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 	}
 
 	// Get the list of actions for the given scope.
+	// 2. 对资源对象添加 actions
 	switch {
 	case !namespaceScoped:
 		// Handle non-namespace scoped resources like nodes.
@@ -562,6 +566,7 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 		}
 		reqScope.FieldManager = fm
 	}
+	// 3. 遍历所有支持的 action,对资源对象添加对应的 handler
 	for _, action := range actions {
 		producedObject := storageMeta.ProducesObject(action.Verb)
 		if producedObject == nil {
@@ -612,12 +617,17 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 
 		verbOverrider, needOverride := storage.(StorageMetricsOverride)
 
+		// 3.1 为每个操作添加对应的 handler,更新 routes 路由列表
 		switch action.Verb {
 		case "GET": // Get a resource.
+			// 3.1.1 初始化 handler
 			var handler restful.RouteFunction
 			if isGetterWithOptions {
 				handler = restfulGetResourceWithOptions(getterWithOptions, reqScope, isSubresource)
 			} else {
+				// 以 pod 为例,这里传入的 getter 为 podStorage.
+				// 在处理请求时,最终会交由 pkg/registry/core/pod/storage/storage.go#L288 的 Get 函数处理.
+				//  最终会返回 EphemeralContainers 对象,也就是 kubectl get pods xxx 的返回,只是在返回时做了处理,可以返回为 json,yaml
 				handler = restfulGetResource(getter, exporter, reqScope)
 			}
 
@@ -632,6 +642,7 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 			if isSubresource {
 				doc = "read " + subresource + " of the specified " + kind
 			}
+			// 3.1.2 route 与 handler 进行绑定
 			route := ws.GET(action.Path).To(handler).
 				Doc(doc).
 				Param(ws.QueryParameter("pretty", "If 'true', then the output is pretty printed.")).
@@ -650,6 +661,7 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 				}
 			}
 			addParams(route, action.Params)
+			// 3.1.3 添加到 routes 中,后续统一添加到服务的路由表中
 			routes = append(routes, route)
 		case "LIST": // List all resources of a kind.
 			doc := "list objects of kind " + kind
@@ -888,6 +900,7 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 		default:
 			return nil, fmt.Errorf("unrecognized action verb: %s", action.Verb)
 		}
+		// 3.2 将上述 routes 路由列表添加到服务的路由表中
 		for _, route := range routes {
 			route.Metadata(ROUTE_META_GVK, metav1.GroupVersionKind{
 				Group:   reqScope.Kind.Group,

@@ -62,6 +62,7 @@ func (s *DeprecatedInsecureServingInfo) NewLoopbackClientConfig() (*rest.Config,
 		return nil, nil
 	}
 
+	// 如果配置了 0.0.0.0,则使用 localhost,进行监听;
 	host, port, err := LoopbackHostPort(s.Listener.Addr().String())
 	if err != nil {
 		return nil, err
@@ -72,6 +73,7 @@ func (s *DeprecatedInsecureServingInfo) NewLoopbackClientConfig() (*rest.Config,
 		// Increase QPS limits. The client is currently passed to all admission plugins,
 		// and those can be throttled in case of higher load on apiserver - see #22340 and #22422
 		// for more details. Once #22422 is fixed, we may want to remove it.
+		// 会对不安全的客户端做限速
 		QPS:   50,
 		Burst: 100,
 	}, nil

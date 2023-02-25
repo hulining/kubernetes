@@ -481,6 +481,7 @@ func (c *RecommendedConfig) Complete() CompletedConfig {
 // New creates a new server which logically combines the handling chain with the passed server.
 // name is used to differentiate for logging. The handler chain in particular can be difficult as it starts delgating.
 // delegationTarget may not be nil.
+// Trans: New 用于创建一个新服务器,该服务器在逻辑上将处理链与传递的 server 组合在一起
 func (c completedConfig) New(name string, delegationTarget DelegationTarget) (*GenericAPIServer, error) {
 	if c.Serializer == nil {
 		return nil, fmt.Errorf("Genericapiserver.New() called with config.Serializer == nil")
@@ -492,11 +493,13 @@ func (c completedConfig) New(name string, delegationTarget DelegationTarget) (*G
 		return nil, fmt.Errorf("Genericapiserver.New() called with config.EquivalentResourceRegistry == nil")
 	}
 
+	// 1. 定义默认的 handlerChain 构造器,并使用该构造器创建 kube-apiserver 中不同 API server 的处理器
 	handlerChainBuilder := func(handler http.Handler) http.Handler {
 		return c.BuildHandlerChainFunc(handler, c.Config)
 	}
 	apiServerHandler := NewAPIServerHandler(name, c.Serializer, handlerChainBuilder, delegationTarget.UnprotectedHandler())
 
+	// 2. 构建 GenericAPIServer 对象
 	s := &GenericAPIServer{
 		discoveryAddresses:         c.DiscoveryAddresses,
 		LoopbackClientConfig:       c.LoopbackClientConfig,
@@ -550,14 +553,18 @@ func (c completedConfig) New(name string, delegationTarget DelegationTarget) (*G
 		}
 	}
 
+	// 3.1 添加 delegationTarget 中的 PostStartHooks 钩子函数
 	for k, v := range delegationTarget.PostStartHooks() {
 		s.postStartHooks[k] = v
 	}
 
+	// 3.2 添加 delegationTarget 中的 PreShutdownHooks 钩子函数
 	for k, v := range delegationTarget.PreShutdownHooks() {
 		s.preShutdownHooks[k] = v
 	}
 
+	// 4. 当 SharedInformerFactory 不为空时,确保 generic-apiserver-start-informers PostStartHook 钩子函数存在.
+	//    此钩子函数用于启动 SharedInformerFactory,并将 SharedInformerFactory 就绪检查添加到健康检查列表中.
 	genericApiServerHookName := "generic-apiserver-start-informers"
 	if c.SharedInformerFactory != nil {
 		if !s.isPostStartHookRegistered(genericApiServerHookName) {
@@ -576,6 +583,7 @@ func (c completedConfig) New(name string, delegationTarget DelegationTarget) (*G
 		}
 	}
 
+	// 5. 将 delegationTarget 的 HealthChecker 健康检查对象同步过来.如果没有则添加.
 	for _, delegateCheck := range delegationTarget.HealthzChecks() {
 		skip := false
 		for _, existingCheck := range c.HealthzChecks {
@@ -592,6 +600,7 @@ func (c completedConfig) New(name string, delegationTarget DelegationTarget) (*G
 
 	s.listedPathProvider = routes.ListedPathProviders{s.listedPathProvider, delegationTarget}
 
+	// 暴露 api
 	installAPI(s, c.Config)
 
 	// use the UnprotectedHandler from the delegation target to ensure that we don't attempt to double authenticator, authorize,
@@ -623,10 +632,13 @@ func DefaultBuildHandlerChain(apiHandler http.Handler, c *Config) http.Handler {
 	return handler
 }
 
+// 暴露 api
 func installAPI(s *GenericAPIServer, c *Config) {
+	// "/" 和 "index.html" index API 在非 restful 的路由器上注册
 	if c.EnableIndex {
 		routes.Index{}.Install(s.listedPathProvider, s.Handler.NonGoRestfulMux)
 	}
+	// pprof 相关 API 在非 restful 的路由器上注册
 	if c.EnableProfiling {
 		routes.Profiling{}.Install(s.Handler.NonGoRestfulMux)
 		if c.EnableContentionProfiling {
@@ -635,6 +647,7 @@ func installAPI(s *GenericAPIServer, c *Config) {
 		// so far, only logging related endpoints are considered valid to add for these debug flags.
 		routes.DebugFlags{}.Install(s.Handler.NonGoRestfulMux, "v", routes.StringFlagPutHandler(logs.GlogSetter))
 	}
+	// / metrics 相关 API 在非 restful 的路由器上注册
 	if c.EnableMetrics {
 		if c.EnableProfiling {
 			routes.MetricsWithReset{}.Install(s.Handler.NonGoRestfulMux)
@@ -643,6 +656,7 @@ func installAPI(s *GenericAPIServer, c *Config) {
 		}
 	}
 
+	// /version 相关 API 在非 restful 的路由器上注册
 	routes.Version{Version: c.Version}.Install(s.Handler.GoRestfulContainer)
 
 	if c.EnableDiscovery {

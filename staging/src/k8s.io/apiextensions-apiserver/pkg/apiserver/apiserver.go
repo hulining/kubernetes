@@ -130,15 +130,18 @@ func (cfg *Config) Complete() CompletedConfig {
 
 // New returns a new instance of CustomResourceDefinitions from the given config.
 func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget) (*CustomResourceDefinitions, error) {
+	// 1. 创建通用的 genericServer,名称为 apiextensions-apiserver
 	genericServer, err := c.GenericConfig.New("apiextensions-apiserver", delegationTarget)
 	if err != nil {
 		return nil, err
 	}
 
+	// 2. 封装 GenericAPIServer 为 CustomResourceDefinitions
 	s := &CustomResourceDefinitions{
 		GenericAPIServer: genericServer,
 	}
 
+	// 3.1 初始化 apiGroupInfo
 	apiResourceConfig := c.GenericConfig.MergedResourceConfig
 	apiGroupInfo := genericapiserver.NewDefaultAPIGroupInfo(apiextensions.GroupName, Scheme, metav1.ParameterCodec, Codecs)
 	if apiResourceConfig.VersionEnabled(v1beta1.SchemeGroupVersion) {
@@ -160,10 +163,12 @@ func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 		apiGroupInfo.VersionedResourcesStorageMap[v1.SchemeGroupVersion.Version] = storage
 	}
 
+	// 3.2 根据 apiGroupInfo 在 api 中公开给定的 groupversionresource
 	if err := s.GenericAPIServer.InstallAPIGroup(&apiGroupInfo); err != nil {
 		return nil, err
 	}
 
+	// 4. 初始化 crdClient,并为 crd 配置 SharedInformer 工厂
 	crdClient, err := internalclientset.NewForConfig(s.GenericAPIServer.LoopbackClientConfig)
 	if err != nil {
 		// it's really bad that this is leaking here, but until we can fix the test (which I'm pretty sure isn't even testing what it wants to test),
@@ -185,6 +190,8 @@ func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 		discovery: map[string]*discovery.APIGroupHandler{},
 		delegate:  delegateHandler,
 	}
+	// 5. 构建 establishingController,用于控制如何以及何时建立CRD.
+	//    构建 crdHandler,它服务于 "/apis" endpoint,用于处理 CRD 资源的更新
 	establishingController := establish.NewEstablishingController(s.Informers.Apiextensions().InternalVersion().CustomResourceDefinitions(), crdClient.Apiextensions())
 	crdHandler, err := NewCustomResourceDefinitionHandler(
 		versionDiscoveryHandler,
@@ -209,6 +216,7 @@ func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 	s.GenericAPIServer.Handler.NonGoRestfulMux.Handle("/apis", crdHandler)
 	s.GenericAPIServer.Handler.NonGoRestfulMux.HandlePrefix("/apis/", crdHandler)
 
+	// 6. 定义 controller,后续会在 apiserver 的 "start-apiextensions-controllers" PostStartHook 钩子函数中启动这些 controller
 	crdController := NewDiscoveryController(s.Informers.Apiextensions().InternalVersion().CustomResourceDefinitions(), versionDiscoveryHandler, groupDiscoveryHandler)
 	namingController := status.NewNamingConditionController(s.Informers.Apiextensions().InternalVersion().CustomResourceDefinitions(), crdClient.Apiextensions())
 	nonStructuralSchemaController := nonstructuralschema.NewConditionController(s.Informers.Apiextensions().InternalVersion().CustomResourceDefinitions(), crdClient.Apiextensions())
@@ -223,6 +231,7 @@ func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 		openapiController = openapicontroller.NewController(s.Informers.Apiextensions().InternalVersion().CustomResourceDefinitions())
 	}
 
+	// 7. 对 GenericAPIServer 添加 PostStartHook,用于启动 SharedInformerFactory, controller,并确保 SharedInformer 队列中的 crd 已经同步
 	s.GenericAPIServer.AddPostStartHookOrDie("start-apiextensions-informers", func(context genericapiserver.PostStartHookContext) error {
 		s.Informers.Start(context.StopCh)
 		return nil

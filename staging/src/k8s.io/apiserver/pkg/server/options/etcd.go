@@ -197,11 +197,14 @@ func (s *EtcdOptions) ApplyWithStorageFactoryTo(factory serverstorage.StorageFac
 	return nil
 }
 
+// 添加 etcd 健康检查
 func (s *EtcdOptions) addEtcdHealthEndpoint(c *server.Config) error {
+	// 创建 etcd 健康检查函数
 	healthCheck, err := storagefactory.CreateHealthCheck(s.StorageConfig)
 	if err != nil {
 		return err
 	}
+	// 调用 AddHealthChecks 添加 HealthChecker 对 etcd 的健康检查
 	c.AddHealthChecks(healthz.NamedCheck("etcd", func(r *http.Request) error {
 		return healthCheck()
 	}))

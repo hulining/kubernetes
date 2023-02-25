@@ -289,6 +289,7 @@ func (s *GenericAPIServer) PrepareRun() preparedGenericAPIServer {
 		}.Install(s.Handler.GoRestfulContainer, s.Handler.NonGoRestfulMux)
 	}
 
+	// 1. 完成健康检查(/healthz),存活检查(/livez),就绪检查(/readyz) API 路由的注册
 	s.installHealthz()
 	s.installLivez()
 	err := s.addReadyzShutdownCheck(s.readinessStopCh)
@@ -299,6 +300,7 @@ func (s *GenericAPIServer) PrepareRun() preparedGenericAPIServer {
 
 	// Register audit backend preShutdownHook.
 	if s.AuditBackend != nil {
+		// 2. 添加 audit-backend PreShutdownHook 钩子函数,用于停止 AuditBackend
 		err := s.AddPreShutdownHook("audit-backend", func() error {
 			s.AuditBackend.Shutdown()
 			return nil
@@ -335,9 +337,11 @@ func (s preparedGenericAPIServer) Run(stopCh <-chan struct{}) error {
 		return err
 	}
 
+	// 阻塞,直到 stopCh 有消息
 	<-stopCh
 
 	// run shutdown hooks directly. This includes deregistering from the kubernetes endpoint in case of kube-apiserver.
+	// 运行停止前的钩子函数.
 	err = s.RunPreShutdownHooks()
 	if err != nil {
 		return err
@@ -354,6 +358,7 @@ func (s preparedGenericAPIServer) Run(stopCh <-chan struct{}) error {
 
 // NonBlockingRun spawns the secure http server. An error is
 // returned if the secure port cannot be listened on.
+// Trans: NonBlockingRun 生成安全的 HTTP 服务器,如果无法监听端口,则返回错误.此函数不会阻塞
 func (s preparedGenericAPIServer) NonBlockingRun(stopCh <-chan struct{}) error {
 	// Use an stop channel to allow graceful shutdown without dropping audit events
 	// after http server shutdown.
@@ -372,6 +377,7 @@ func (s preparedGenericAPIServer) NonBlockingRun(stopCh <-chan struct{}) error {
 	var stoppedCh <-chan struct{}
 	if s.SecureServingInfo != nil && s.Handler != nil {
 		var err error
+		// 启动安全的 HTTP 服务器
 		stoppedCh, err = s.SecureServingInfo.Serve(s.Handler, s.ShutdownTimeout, internalStopCh)
 		if err != nil {
 			close(internalStopCh)
@@ -393,6 +399,7 @@ func (s preparedGenericAPIServer) NonBlockingRun(stopCh <-chan struct{}) error {
 		close(auditStopCh)
 	}()
 
+	// 运行启动后的 hooks
 	s.RunPostStartHooks(stopCh)
 
 	if _, err := systemd.SdNotify(true, "READY=1\n"); err != nil {
@@ -417,6 +424,7 @@ func (s *GenericAPIServer) installAPIResources(apiPrefix string, apiGroupInfo *A
 		apiGroupVersion.OpenAPIModels = openAPIModels
 		apiGroupVersion.MaxRequestBodyBytes = s.maxRequestBodyBytes
 
+		// 将所有 apiGroupVersion 注册到 *restful.Container 路由器中
 		if err := apiGroupVersion.InstallREST(s.Handler.GoRestfulContainer); err != nil {
 			return fmt.Errorf("unable to setup API %v: %v", apiGroupInfo, err)
 		}
@@ -435,12 +443,14 @@ func (s *GenericAPIServer) InstallLegacyAPIGroup(apiPrefix string, apiGroupInfo 
 		return fmt.Errorf("unable to get openapi models: %v", err)
 	}
 
+	// 1. ***重要*** 这里会将 APIResources 根据配置配置为 restful 格式的 api
 	if err := s.installAPIResources(apiPrefix, apiGroupInfo, openAPIModels); err != nil {
 		return err
 	}
 
 	// Install the version handler.
 	// Add a handler at /<apiPrefix> to enumerate the supported api versions.
+	// 2. 添加 "/api/" restful 格式的 api
 	s.Handler.GoRestfulContainer.Add(discovery.NewLegacyRootAPIHandler(s.discoveryAddresses, s.Serializer, apiPrefix).WebService())
 
 	return nil

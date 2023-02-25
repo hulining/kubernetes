@@ -36,6 +36,7 @@ import (
 )
 
 // ServerRunOptions runs a kubernetes api server.
+// ServerRunOptions. 包含了 kube-apiserver 所有命令行参数
 type ServerRunOptions struct {
 	GenericServerRunOptions *genericoptions.ServerRunOptions
 	Etcd                    *genericoptions.EtcdOptions

@@ -59,6 +59,7 @@ func init() {
 	legacyregistry.RawMustRegister(grpcprom.DefaultClientMetrics)
 }
 
+// etcdv3 的健康检查函数
 func newETCD3HealthCheck(c storagebackend.Config) (func() error, error) {
 	// constructing the etcd v3 client blocks and times out if etcd is not available.
 	// retry in a loop in the background until we successfully create the client, storing the client or error encountered
@@ -68,6 +69,7 @@ func newETCD3HealthCheck(c storagebackend.Config) (func() error, error) {
 	clientErrMsg := &atomic.Value{}
 	clientErrMsg.Store("etcd client connection not yet established")
 
+	// 每隔 1s 尝试创建 etcdv3 客户端对象,并将客户端对象存储到 clientValue 中.
 	go wait.PollUntil(time.Second, func() (bool, error) {
 		client, err := newETCD3Client(c.Transport)
 		if err != nil {
@@ -83,6 +85,7 @@ func newETCD3HealthCheck(c storagebackend.Config) (func() error, error) {
 		if errMsg := clientErrMsg.Load().(string); len(errMsg) > 0 {
 			return fmt.Errorf(errMsg)
 		}
+		// 从 clientValue 加载 etcdv3 的客户端对象后请求 health key,判断健康状况
 		client := clientValue.Load().(*clientv3.Client)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -95,6 +98,7 @@ func newETCD3HealthCheck(c storagebackend.Config) (func() error, error) {
 	}, nil
 }
 
+// 根据配置创建 etcd3 的客户端端
 func newETCD3Client(c storagebackend.TransportConfig) (*clientv3.Client, error) {
 	tlsInfo := transport.TLSInfo{
 		CertFile: c.CertFile,

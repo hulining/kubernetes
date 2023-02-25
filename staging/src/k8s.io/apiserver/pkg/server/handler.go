@@ -70,12 +70,15 @@ type APIServerHandler struct {
 // It is normally used to apply filtering like authentication and authorization
 type HandlerChainBuilderFn func(apiHandler http.Handler) http.Handler
 
+// 新建 kube-apiserver 中不同 API server 的处理器
 func NewAPIServerHandler(name string, s runtime.NegotiatedSerializer, handlerChainBuilder HandlerChainBuilderFn, notFoundHandler http.Handler) *APIServerHandler {
+	// 1. 非 resful 格式的路由器
 	nonGoRestfulMux := mux.NewPathRecorderMux(name)
 	if notFoundHandler != nil {
 		nonGoRestfulMux.NotFoundHandler(notFoundHandler)
 	}
 
+	// 2. go restful 格式的路由器
 	gorestfulContainer := restful.NewContainer()
 	gorestfulContainer.ServeMux = http.NewServeMux()
 	gorestfulContainer.Router(restful.CurlyRouter{}) // e.g. for proxy/{kind}/{name}/{*}
@@ -86,6 +89,7 @@ func NewAPIServerHandler(name string, s runtime.NegotiatedSerializer, handlerCha
 		serviceErrorHandler(s, serviceErr, request, response)
 	})
 
+	// 3. 总路由器.在处理请求时会将 resful 的请求转发到 gorestfulContainer,非 resful 的请求转发到 nonGoRestfulMux
 	director := director{
 		name:               name,
 		goRestfulContainer: gorestfulContainer,

@@ -51,6 +51,7 @@ func createAPIExtensionsConfig(
 
 	// override genericConfig.AdmissionControl with apiextensions' scheme,
 	// because apiextentions apiserver should use its own scheme to convert resources.
+	// 命令行中的准入控制相关参数会覆盖默认配置中的 genericConfig.AdmissionControl 参数
 	err := commandOptions.Admission.ApplyTo(
 		&genericConfig,
 		externalInformers,

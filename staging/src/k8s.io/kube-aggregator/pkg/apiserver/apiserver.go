@@ -161,11 +161,13 @@ func (c completedConfig) NewWithDelegate(delegationTarget genericapiserver.Deleg
 	openAPIConfig := c.GenericConfig.OpenAPIConfig
 	c.GenericConfig.OpenAPIConfig = nil
 
+	// 1. 创建 genericServer,名称为 kube-aggregator
 	genericServer, err := c.GenericConfig.New("kube-aggregator", delegationTarget)
 	if err != nil {
 		return nil, err
 	}
 
+	// 2. 创建 apiregistrationClient 与 informerFactory
 	apiregistrationClient, err := clientset.NewForConfig(c.GenericConfig.LoopbackClientConfig)
 	if err != nil {
 		return nil, err
@@ -175,6 +177,7 @@ func (c completedConfig) NewWithDelegate(delegationTarget genericapiserver.Deleg
 		5*time.Minute, // this is effectively used as a refresh interval right now.  Might want to do something nicer later on.
 	)
 
+	// 3. 封装 genericServer 为 APIAggregator
 	s := &APIAggregator{
 		GenericAPIServer:                 genericServer,
 		delegateHandler:                  delegationTarget.UnprotectedHandler(),
@@ -190,6 +193,7 @@ func (c completedConfig) NewWithDelegate(delegationTarget genericapiserver.Deleg
 		enableAggregatedDiscoveryTimeout: c.ExtraConfig.EnableAggregatedDiscoveryTimeout,
 	}
 
+	// 4. 根据配置得到 apiGroupInfo,并根据 apiGroupInfo 安装&暴露 api
 	apiGroupInfo := apiservicerest.NewRESTStorage(c.GenericConfig.MergedResourceConfig, c.GenericConfig.RESTOptionsGetter)
 	if err := s.GenericAPIServer.InstallAPIGroup(&apiGroupInfo); err != nil {
 		return nil, err
@@ -202,6 +206,7 @@ func (c completedConfig) NewWithDelegate(delegationTarget genericapiserver.Deleg
 	s.GenericAPIServer.Handler.NonGoRestfulMux.Handle("/apis", apisHandler)
 	s.GenericAPIServer.Handler.NonGoRestfulMux.UnlistedHandle("/apis/", apisHandler)
 
+	// 5. 构建 controller,apiserviceRegistrationController用于负责注册和取消删除API服务,availableController 用于检查已注册服务的可用性.分别在后续的钩子函数中启动
 	apiserviceRegistrationController := NewAPIServiceRegistrationController(informerFactory.Apiregistration().V1().APIServices(), s)
 	availableController, err := statuscontrollers.NewAvailableConditionController(
 		informerFactory.Apiregistration().V1().APIServices(),
@@ -217,6 +222,7 @@ func (c completedConfig) NewWithDelegate(delegationTarget genericapiserver.Deleg
 		return nil, err
 	}
 
+	// 添加 PostStartHook 钩子函数,启动 SharedInformerFactory,controller 等
 	s.GenericAPIServer.AddPostStartHookOrDie("start-kube-aggregator-informers", func(context genericapiserver.PostStartHookContext) error {
 		informerFactory.Start(context.StopCh)
 		c.GenericConfig.SharedInformerFactory.Start(context.StopCh)

@@ -94,6 +94,7 @@ type APIGroupVersion struct {
 // InstallREST registers the REST handlers (storage, watch, proxy and redirect) into a restful Container.
 // It is expected that the provided path root prefix will serve all operations. Root MUST NOT end
 // in a slash.
+// Trans: InstallREST 将REST处理程序(storage,watch,proxy and redirect)注册到一个restful Container 中
 func (g *APIGroupVersion) InstallREST(container *restful.Container) error {
 	prefix := path.Join(g.Root, g.GroupVersion.Group, g.GroupVersion.Version)
 	installer := &APIInstaller{
@@ -102,6 +103,7 @@ func (g *APIGroupVersion) InstallREST(container *restful.Container) error {
 		minRequestTimeout: g.MinRequestTimeout,
 	}
 
+	// 注册 kubernetes 中支持的所有资源对象,并为所有资源对象添加支持的 restful api
 	apiResources, ws, registrationErrors := installer.Install()
 	versionDiscoveryHandler := discovery.NewAPIVersionHandler(g.Serializer, g.GroupVersion, staticLister{apiResources})
 	versionDiscoveryHandler.AddToWebService(ws)

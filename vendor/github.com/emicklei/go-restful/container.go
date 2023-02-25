@@ -104,6 +104,7 @@ func (c *Container) Add(service *WebService) *Container {
 
 	// If not registered on root then add specific mapping
 	if !c.isRegisteredOnRoot {
+		// 添加 handler
 		c.isRegisteredOnRoot = c.addHandler(service, c.ServeMux)
 	}
 	c.webServices = append(c.webServices, service)
@@ -200,6 +201,7 @@ func (c *Container) Dispatch(httpWriter http.ResponseWriter, httpRequest *http.R
 }
 
 // Dispatch the incoming Http Request to a matching WebService.
+// 作为 restful api 的 hander,调用 CurlyRouter.
 func (c *Container) dispatch(httpWriter http.ResponseWriter, httpRequest *http.Request) {
 	writer := httpWriter
 

@@ -268,6 +268,8 @@ func (c LegacyRESTStorageProvider) NewLegacyRESTStorage(restOptionsGetter generi
 		serviceNodePortAllocator,
 		c.ProxyTransport)
 
+	// 定义 pod 的 restStorageMap,赋值给 apiGroupInfo.VersionedResourcesStorageMap["v1"].
+	// 后续 restful Server 会给按照路径获取到的 apiResource 添加 handler.如 /v1/pods 会获取到 podStorage.Pod,
 	restStorageMap := map[string]rest.Storage{
 		"pods":             podStorage.Pod,
 		"pods/attach":      podStorage.Attach,

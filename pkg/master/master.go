@@ -327,6 +327,7 @@ func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 		return nil, fmt.Errorf("Master.New() called with empty config.KubeletClientConfig")
 	}
 
+	// 1. 创建通用的 GenericAPIServer,名称为 kube-apiserver
 	s, err := c.GenericConfig.New("kube-apiserver", delegationTarget)
 	if err != nil {
 		return nil, err
@@ -336,11 +337,14 @@ func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 		routes.Logs{}.Install(s.Handler.GoRestfulContainer)
 	}
 
+	// 2. 封装 GenericAPIServer 为 Master
 	m := &Master{
 		GenericAPIServer: s,
 	}
 
 	// install legacy rest storage
+	// 3. 根据版本启用情况,暴露&安装遗留的 api.
+	// 这里的 c.ExtraConfig.APIResourceConfigSource = DefaultAPIResourceConfigSource,返回为 true.
 	if c.ExtraConfig.APIResourceConfigSource.VersionEnabled(apiv1.SchemeGroupVersion) {
 		legacyRESTStorageProvider := corerest.LegacyRESTStorageProvider{
 			StorageFactory:              c.ExtraConfig.StorageFactory,
@@ -367,6 +371,7 @@ func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 	// with specific priorities.
 	// TODO: describe the priority all the way down in the RESTStorageProviders and plumb it back through the various discovery
 	// handlers that we have.
+	// 4. 安装 restful 提供方的 api
 	restStorageProviders := []RESTStorageProvider{
 		auditregistrationrest.RESTStorageProvider{},
 		authenticationrest.RESTStorageProvider{Authenticator: c.GenericConfig.Authentication.Authenticator, APIAudiences: c.GenericConfig.Authentication.APIAudiences},
@@ -390,6 +395,8 @@ func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 		admissionregistrationrest.RESTStorageProvider{},
 		eventsrest.RESTStorageProvider{TTL: c.ExtraConfig.EventTTL},
 	}
+	// 4.1 这里传入的 c.ExtraConfig.APIResourceConfigSource = DefaultAPIResourceConfigSource
+	// c.GenericConfig.RESTOptionsGetter 为一开始通过 buildGenericConfig 函数调用 s.Etcd.ApplyWithStorageFactoryTo(storageFactory, genericConfig) 后传入的 `c.RESTOptionsGetter = &StorageFactoryRestOptionsFactory{Options: *s, StorageFactory: factory}`
 	if err := m.InstallAPIs(c.ExtraConfig.APIResourceConfigSource, c.GenericConfig.RESTOptionsGetter, restStorageProviders...); err != nil {
 		return nil, err
 	}
@@ -398,6 +405,7 @@ func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 		m.installTunneler(c.ExtraConfig.Tunneler, corev1client.NewForConfigOrDie(c.GenericConfig.LoopbackClientConfig).Nodes())
 	}
 
+	// 5. 添加 "ca-registration" PostStartHook 钩子函数,用于将 ca 证书数据写入到 "kube-system" 名称空间的 configMap 中, configMap 名称为 extension-apiserver-authentication
 	m.GenericAPIServer.AddPostStartHookOrDie("ca-registration", c.ExtraConfig.ClientCARegistrationHook.PostStartHook)
 
 	return m, nil
@@ -409,12 +417,18 @@ func (m *Master) InstallLegacyAPI(c *completedConfig, restOptionsGetter generic.
 		return fmt.Errorf("Error building core storage: %v", err)
 	}
 
+	// 1. 初始化 bootstrap-controller,并添加 bootstrap-controller 的钩子函数,该钩子函数用于
+	//   1.1 创建 kube-system,kube-public namespace,见 RunKubernetesNamespaces
+	//   1.2  创建 default namespace,并在该 namespace 创建&更新 kubernetes service 与 endpoint 信息,见 RunKubernetesService
+	//   1.3 运行控制器,用于确保集群中所有 service clusterip 在集群中是唯一分配的,并为未同步的 service 生成告警信息.详见 repairClusterIPs.RunUntil
+	//   1.4 运行控制器,用于确保在整个集群中唯一分配所有端口,并为不同步的集群生成信息警告.详见 repairNodePorts.RunUntil
 	controllerName := "bootstrap-controller"
 	coreClient := corev1client.NewForConfigOrDie(c.GenericConfig.LoopbackClientConfig)
 	bootstrapController := c.NewBootstrapController(legacyRESTStorage, coreClient, coreClient, coreClient, coreClient.RESTClient())
 	m.GenericAPIServer.AddPostStartHookOrDie(controllerName, bootstrapController.PostStartHook)
 	m.GenericAPIServer.AddPreShutdownHookOrDie(controllerName, bootstrapController.PreShutdownHook)
 
+	// 2. 安装保留的核心 APIGroup,uri 前缀为 "/api"
 	if err := m.GenericAPIServer.InstallLegacyAPIGroup(genericapiserver.DefaultLegacyAPIPrefix, &apiGroupInfo); err != nil {
 		return fmt.Errorf("Error in registering group versions: %v", err)
 	}
@@ -444,8 +458,10 @@ type RESTStorageProvider interface {
 func (m *Master) InstallAPIs(apiResourceConfigSource serverstorage.APIResourceConfigSource, restOptionsGetter generic.RESTOptionsGetter, restStorageProviders ...RESTStorageProvider) error {
 	apiGroupsInfo := []*genericapiserver.APIGroupInfo{}
 
+	// 这里以 restStorageBuilder = appsrest.RESTStorageProvider{} 为例简单过一下流程
 	for _, restStorageBuilder := range restStorageProviders {
 		groupName := restStorageBuilder.GroupName()
+		// 从 DefaultAPIResourceConfigSource() 函数返回的对象来看, "apps" group 是被启用的
 		if !apiResourceConfigSource.AnyVersionForGroupEnabled(groupName) {
 			klog.V(1).Infof("Skipping disabled API group %q.", groupName)
 			continue
@@ -460,6 +476,9 @@ func (m *Master) InstallAPIs(apiResourceConfigSource serverstorage.APIResourceCo
 		}
 		klog.V(1).Infof("Enabling API group %q.", groupName)
 
+		// 这里目前只有 storage_rbac 和 storage_scheduling 实现了 PostStartHookProvider 接口,其他 Storage 不做处理
+		// storage_rbac 用于确保 bootstrap roles,bootstrap rolebindings,bootstrap namespaced roles,bootstrap namespaced rolebindings 都已经被正确创建
+		// storage_scheduling 用于确保所有 "system priority classes" 都已经被创建
 		if postHookProvider, ok := restStorageBuilder.(genericapiserver.PostStartHookProvider); ok {
 			name, hook, err := postHookProvider.PostStartHook()
 			if err != nil {
@@ -471,6 +490,7 @@ func (m *Master) InstallAPIs(apiResourceConfigSource serverstorage.APIResourceCo
 		apiGroupsInfo = append(apiGroupsInfo, &apiGroupInfo)
 	}
 
+	// 调用 InstallAPIGroups 安装&暴露 api
 	if err := m.GenericAPIServer.InstallAPIGroups(apiGroupsInfo...); err != nil {
 		return fmt.Errorf("Error in registering group versions: %v", err)
 	}
