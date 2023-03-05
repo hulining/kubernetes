@@ -411,6 +411,7 @@ func (ssc *StatefulSetController) sync(key string) error {
 		klog.V(4).Infof("Finished syncing statefulset %q (%v)", key, time.Since(startTime))
 	}()
 
+	// 1. 获取给定 set 对象
 	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		return err
@@ -425,6 +426,7 @@ func (ssc *StatefulSetController) sync(key string) error {
 		return err
 	}
 
+	// 2. 根据 set 对象的选择器筛选出 pod
 	selector, err := metav1.LabelSelectorAsSelector(set.Spec.Selector)
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("error converting StatefulSet %v selector: %v", key, err))
@@ -441,6 +443,7 @@ func (ssc *StatefulSetController) sync(key string) error {
 		return err
 	}
 
+	// 3. 同步 set 对象信息
 	return ssc.syncStatefulSet(set, pods)
 }
 

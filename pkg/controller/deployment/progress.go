@@ -32,6 +32,7 @@ import (
 // cases this helper will run that cannot be prevented from the scaling detection,
 // for example a resync of the deployment after it was scaled up. In those cases,
 // we shouldn't try to estimate any progress.
+// Trans: syncRolloutStatus 用于在 rollout 过程中中更新 deployment 的状态
 func (dc *DeploymentController) syncRolloutStatus(allRSs []*apps.ReplicaSet, newRS *apps.ReplicaSet, d *apps.Deployment) error {
 	newStatus := calculateStatus(allRSs, newRS, d)
 

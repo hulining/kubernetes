@@ -574,6 +574,7 @@ func (nc *Controller) Run(stopCh <-chan struct{}) {
 		return
 	}
 
+	// 1. 启动污点管理器,由 --enable-taint-manager 参数控制,默认为 true.
 	if nc.runTaintManager {
 		go nc.taintManager.Run(stopCh)
 	}
@@ -583,6 +584,8 @@ func (nc *Controller) Run(stopCh <-chan struct{}) {
 	defer nc.podUpdateQueue.ShutDown()
 
 	// Start workers to reconcile labels and/or update NoSchedule taint for nodes.
+	// 2. 启动 goroutine(默认 8 个),从 nodeUpdateQueue 取出 node 事件,调用方法进行处理
+	//    主要是更新该节点的 NoSchedule 污点,并调和节点上的 labels
 	for i := 0; i < scheduler.UpdateWorkerSize; i++ {
 		// Thanks to "workqueue", each worker just need to get item from queue, because
 		// the item is flagged when got from queue: if new event come, the new item will
@@ -591,6 +594,7 @@ func (nc *Controller) Run(stopCh <-chan struct{}) {
 		go wait.Until(nc.doNodeProcessingPassWorker, time.Second, stopCh)
 	}
 
+	// 启动 goroutine(默认 4 个),用于调和 Pod.从 podUpdateQueue 中取出事件,调用 processPod 处理
 	for i := 0; i < podUpdateWorkerSize; i++ {
 		go wait.Until(nc.doPodProcessingWorker, time.Second, stopCh)
 	}
@@ -598,6 +602,7 @@ func (nc *Controller) Run(stopCh <-chan struct{}) {
 	if nc.useTaintBasedEvictions {
 		// Handling taint based evictions. Because we don't want a dedicated logic in TaintManager for NC-originated
 		// taints and we normally don't rate limit evictions caused by taints, we need to rate limit adding taints.
+		// 处理基于污点的驱逐策略
 		go wait.Until(nc.doNoExecuteTaintingPass, scheduler.NodeEvictionPeriod, stopCh)
 	} else {
 		// Managing eviction of nodes:
@@ -625,6 +630,7 @@ func (nc *Controller) doNodeProcessingPassWorker() {
 			return
 		}
 		nodeName := obj.(string)
+		// 1. 根据是否开启了 TaintNodesByCondition 特性来对节点添加 NoSchedule 污点,默认为 true
 		if nc.taintNodeByCondition {
 			if err := nc.doNoScheduleTaintingPass(nodeName); err != nil {
 				klog.Errorf("Failed to taint NoSchedule on node <%s>, requeue it: %v", nodeName, err)
@@ -633,6 +639,7 @@ func (nc *Controller) doNodeProcessingPassWorker() {
 		}
 		// TODO: re-evaluate whether there are any labels that need to be
 		// reconcile in 1.19. Remove this function if it's no longer necessary.
+		// 2. 调整 node 的 labels
 		if err := nc.reconcileNodeLabels(nodeName); err != nil {
 			klog.Errorf("Failed to reconcile labels for node <%s>, requeue it: %v", nodeName, err)
 			// TODO(yujuhong): Add nodeName back to the queue
@@ -652,6 +659,7 @@ func (nc *Controller) doNoScheduleTaintingPass(nodeName string) error {
 	}
 
 	// Map node's condition to Taints.
+	// 1. 根据节点的 Condition 构建 taints 列表,此列表为节点期望的 taints 列表
 	var taints []v1.Taint
 	for _, condition := range node.Status.Conditions {
 		if taintMap, found := nodeConditionToTaintKeyStatusMap[condition.Type]; found {
@@ -672,6 +680,7 @@ func (nc *Controller) doNoScheduleTaintingPass(nodeName string) error {
 	}
 
 	// Get exist taints of node.
+	// 2. 获取节点现有的 nodeTaints 列表
 	nodeTaints := taintutils.TaintSetFilter(node.Spec.Taints, func(t *v1.Taint) bool {
 		// only NoSchedule taints are candidates to be compared with "taints" later
 		if t.Effect != v1.TaintEffectNoSchedule {
@@ -685,6 +694,7 @@ func (nc *Controller) doNoScheduleTaintingPass(nodeName string) error {
 		_, found := taintKeyToNodeConditionMap[t.Key]
 		return found
 	})
+	// 3. 对比 taints 与 nodeTaints,获取需要添加&删除的 taints,添加&更新&删除节点上的 taints,来达到期望的状态
 	taintsToAdd, taintsToDel := taintutils.TaintSetDiff(taints, nodeTaints)
 	// If nothing to add not delete, return true directly.
 	if len(taintsToAdd) == 0 && len(taintsToDel) == 0 {
@@ -713,6 +723,7 @@ func (nc *Controller) doNoExecuteTaintingPass() {
 			}
 			_, condition := nodeutil.GetNodeCondition(&node.Status, v1.NodeReady)
 			// Because we want to mimic NodeStatus.Condition["Ready"] we make "unreachable" and "not ready" taints mutually exclusive.
+			// Trans: 因为我们想要模拟 NodeStatus,所以 Condition["Ready"] 的两个值 "unreachable" and "not ready" 是互相排斥的.
 			taintToAdd := v1.Taint{}
 			oppositeTaint := v1.Taint{}
 			switch condition.Status {
@@ -728,6 +739,7 @@ func (nc *Controller) doNoExecuteTaintingPass() {
 				return true, 0
 			}
 
+			// 根据节点目前的状态添加&删除污点.
 			result := nodeutil.SwapNodeControllerTaint(nc.kubeClient, []*v1.Taint{&taintToAdd}, []*v1.Taint{&oppositeTaint}, node)
 			if result {
 				//count the evictionsNumber
@@ -740,6 +752,7 @@ func (nc *Controller) doNoExecuteTaintingPass() {
 	}
 }
 
+// 遍历 zonePodEvictor 队列中的 node,删除该节点上的 pod.
 func (nc *Controller) doEvictionPass() {
 	nc.evictorLock.Lock()
 	defer nc.evictorLock.Unlock()
@@ -788,19 +801,26 @@ func (nc *Controller) doEvictionPass() {
 // For nodes who are not ready or not reachable for a long period of time.
 // This function will taint them if TaintBasedEvictions feature was enabled.
 // Otherwise, it would evict it directly.
+// Trans: monitorNodeHealth 验证节点的健康状态是否被 kubelet 不断更新.如果不是,则配置 "NodeReady==ConditionUnknown".
+// 对于长时间未准备就绪或无法到达的节点,如果启用了 TaintBasedEvictions 特性,该函数将会打污点,否则直接驱逐.
 func (nc *Controller) monitorNodeHealth() error {
 	// We are listing nodes from local cache as we can tolerate some small delays
 	// comparing to state from etcd and there is eventual consistency anyway.
+	// 1. 列出节点列表,并进行分类
 	nodes, err := nc.nodeLister.List(labels.Everything())
 	if err != nil {
 		return err
 	}
 	added, deleted, newZoneRepresentatives := nc.classifyNodes(nodes)
 
+	// 2. 添加 newZoneRepresentatives 中的节点列表到 zoneStates 中
 	for i := range newZoneRepresentatives {
 		nc.addPodEvictorForNewZone(newZoneRepresentatives[i])
 	}
 
+	// 3.1 将待添加的节点添加到 knownNodeSet 中
+	// 3.2 初始化 RateLimitedTimedQueue 队列并将根据其赋值给 nodeController 的成员变量
+	// 3.3 将节点标记为可达,并将节点添加到 zoneNoExecuteTainter 中
 	for i := range added {
 		klog.V(1).Infof("Controller observed a new Node: %#v", added[i].Name)
 		nodeutil.RecordNodeEvent(nc.recorder, added[i].Name, string(added[i].UID), v1.EventTypeNormal, "RegisteredNode", fmt.Sprintf("Registered Node %v in Controller", added[i].Name))
@@ -813,6 +833,7 @@ func (nc *Controller) monitorNodeHealth() error {
 		}
 	}
 
+	// 4. 将待删除的节点从 knownNodeSet 中删除
 	for i := range deleted {
 		klog.V(1).Infof("Controller observed a Node deletion: %v", deleted[i].Name)
 		nodeutil.RecordNodeEvent(nc.recorder, deleted[i].Name, string(deleted[i].UID), v1.EventTypeNormal, "RemovingNode", fmt.Sprintf("Removing Node %v from Controller", deleted[i].Name))
@@ -825,6 +846,7 @@ func (nc *Controller) monitorNodeHealth() error {
 		var observedReadyCondition v1.NodeCondition
 		var currentReadyCondition *v1.NodeCondition
 		node := nodes[i].DeepCopy()
+		// 1. 获取 node 的 gracePeriod, observedReadyCondition, currentReadyCondition 以及最新状态
 		if err := wait.PollImmediate(retrySleepTime, retrySleepTime*scheduler.NodeHealthUpdateRetry, func() (bool, error) {
 			gracePeriod, observedReadyCondition, currentReadyCondition, err = nc.tryUpdateNodeHealth(node)
 			if err == nil {
@@ -849,6 +871,7 @@ func (nc *Controller) monitorNodeHealth() error {
 		}
 
 		if currentReadyCondition != nil {
+			// 2. 根据 nodename 获取运行在该节点上的 pods
 			pods, err := nc.getPodsAssignedToNode(node.Name)
 			if err != nil {
 				utilruntime.HandleError(fmt.Errorf("unable to list pods of node %v: %v", node.Name, err))
@@ -856,6 +879,7 @@ func (nc *Controller) monitorNodeHealth() error {
 					// If error happened during node status transition (Ready -> NotReady)
 					// we need to mark node for retry to force MarkPodsNotReady execution
 					// in the next iteration.
+					// 出错时,会将该该节点保存到 nodesToRetry 中,后面会进行重试
 					nc.nodesToRetry.Store(node.Name, struct{}{})
 				}
 				continue
@@ -868,12 +892,15 @@ func (nc *Controller) monitorNodeHealth() error {
 				}
 			}
 
+			// 判断该 node 是否需要重试
 			_, needsRetry := nc.nodesToRetry.Load(node.Name)
 			switch {
+			// 当 node 的 currentReadyCondition 不为 True 且 observedReadyCondition 为正常时,仅记录 node 状态变化,并执行下面的 case
 			case currentReadyCondition.Status != v1.ConditionTrue && observedReadyCondition.Status == v1.ConditionTrue:
 				// Report node event only once when status changed.
 				nodeutil.RecordNodeStatusChange(nc.recorder, node, "NodeNotReady")
 				fallthrough
+			// 当 node 需要重试,且 observedReadyCondition 不正常时,标记该 node 上的 pod 为 "NotReady" 状态,并将节点添加到 nodesToRetry 列表中.
 			case needsRetry && observedReadyCondition.Status != v1.ConditionTrue:
 				if err = nodeutil.MarkPodsNotReady(nc.kubeClient, pods, node.Name); err != nil {
 					utilruntime.HandleError(fmt.Errorf("unable to mark all pods NotReady on node %v: %v; queuing for retry", node.Name, err))
@@ -882,6 +909,7 @@ func (nc *Controller) monitorNodeHealth() error {
 				}
 			}
 		}
+		// 以上条件均不满足,则从 nodesToRetry 中删除 node,表示该节点无需进行重试.
 		nc.nodesToRetry.Delete(node.Name)
 	}
 	nc.handleDisruption(zoneToNodeConditions, nodes)
@@ -930,6 +958,7 @@ func (nc *Controller) processTaintBaseEviction(node *v1.Node, observedReadyCondi
 	}
 }
 
+// 处理不基于污点的驱逐方式.当 node 状态处于 False 或 Unknown 时,驱逐此节点上的 pods;当处于 True 状态时,取消 pod 驱逐
 func (nc *Controller) processNoTaintBaseEviction(node *v1.Node, observedReadyCondition *v1.NodeCondition, gracePeriod time.Duration, pods []*v1.Pod) error {
 	decisionTimestamp := nc.now()
 	nodeHealthData := nc.nodeHealthMap.getDeepCopy(node.Name)
@@ -1312,6 +1341,10 @@ func (nc *Controller) doPodProcessingWorker() {
 // 1. for NodeReady=true node, taint eviction for this pod will be cancelled
 // 2. for NodeReady=false or unknown node, taint eviction of pod will happen and pod will be marked as not ready
 // 3. if node doesn't exist in cache, it will be skipped and handled later by doEvictionPass
+// Trans: processPod 是处理 pod 分配给 node 的事件的流程.
+// 1. 对于 NodeReady=true 节点，此 pod 的污染清除将被取消
+// 2. 对于 NodeReady=false 或未知节点,pod 将发生污染驱逐,pod 将被标记为未就绪
+// 3. 如果节点在缓存中不存在，它将被跳过,稍后由 doEvictionPass 处理
 func (nc *Controller) processPod(podItem podUpdateItem) {
 	defer nc.podUpdateQueue.Done(podItem)
 	pod, err := nc.podLister.Pods(podItem.namespace).Get(podItem.name)
@@ -1321,6 +1354,7 @@ func (nc *Controller) processPod(podItem podUpdateItem) {
 			return
 		}
 		klog.Warningf("Failed to read pod %v/%v: %v.", podItem.namespace, podItem.name, err)
+		// 如果获取失败了,则将 podItem 延时添加到 podUpdateQueue 队列中
 		nc.podUpdateQueue.AddRateLimited(podItem)
 		return
 	}
@@ -1352,6 +1386,7 @@ func (nc *Controller) processPod(podItem podUpdateItem) {
 	pods := []*v1.Pod{pod}
 	// In taint-based eviction mode, only node updates are processed by NodeLifecycleController.
 	// Pods are processed by TaintManager.
+	// 如果不使用基于污点的驱逐策略,则调用 processNoTaintBaseEviction.
 	if !nc.useTaintBasedEvictions {
 		if err := nc.processNoTaintBaseEviction(node, currentReadyCondition, nc.nodeMonitorGracePeriod, pods); err != nil {
 			klog.Warningf("Unable to process pod %+v eviction from node %v: %v.", podItem, nodeName, err)
@@ -1360,6 +1395,7 @@ func (nc *Controller) processPod(podItem podUpdateItem) {
 		}
 	}
 
+	// 如果当前节点状态不为 True,则更新在该节点上运行的给定 pod 的状态为 False
 	if currentReadyCondition.Status != v1.ConditionTrue {
 		if err := nodeutil.MarkPodsNotReady(nc.kubeClient, pods, nodeName); err != nil {
 			klog.Warningf("Unable to mark pod %+v NotReady on node %v: %v.", podItem, nodeName, err)
@@ -1399,6 +1435,10 @@ func (nc *Controller) setLimiterInZone(zone string, zoneSize int, state ZoneStat
 //   1. added: the nodes that in 'allNodes', but not in 'knownNodeSet'
 //   2. deleted: the nodes that in 'knownNodeSet', but not in 'allNodes'
 //   3. newZoneRepresentatives: the nodes that in both 'knownNodeSet' and 'allNodes', but no zone states
+// Trans: classifyNodes 用于将 allNodes 分成 3类:
+//   1. added: 在 allNodes,但是没有在 knownNodeSet 中的节点
+//   2. deleted: 在 knownNodeSet,但是没有在 knownNodeSet 中的节点
+//   3. newZoneRepresentatives: 在 knownNodeSet 和 allNodes 中,但是没有在 zoneStates 中.
 func (nc *Controller) classifyNodes(allNodes []*v1.Node) (added, deleted, newZoneRepresentatives []*v1.Node) {
 	for i := range allNodes {
 		if _, has := nc.knownNodeSet[allNodes[i].Name]; !has {
@@ -1451,6 +1491,8 @@ func (nc *Controller) addPodEvictorForNewZone(node *v1.Node) {
 	zone := utilnode.GetZoneKey(node)
 	if _, found := nc.zoneStates[zone]; !found {
 		nc.zoneStates[zone] = stateInitial
+		// 创建 RateLimitedTimedQueue 队列,并将其赋值给 nodeController 的成员变量
+		// 如果使用了基于污点的驱逐策略,则赋值给 nodeController 的 zoneNoExecuteTainter 成员变量.否则赋值给 zonePodEvictor
 		if !nc.useTaintBasedEvictions {
 			nc.zonePodEvictor[zone] =
 				scheduler.NewRateLimitedTimedQueue(
@@ -1468,6 +1510,7 @@ func (nc *Controller) addPodEvictorForNewZone(node *v1.Node) {
 
 // cancelPodEviction removes any queued evictions, typically because the node is available again. It
 // returns true if an eviction was queued.
+// 将节点从 zonePodEvictor 中删除,取消 pod 驱逐
 func (nc *Controller) cancelPodEviction(node *v1.Node) bool {
 	zone := utilnode.GetZoneKey(node)
 	nc.evictorLock.Lock()
@@ -1488,6 +1531,7 @@ func (nc *Controller) cancelPodEviction(node *v1.Node) bool {
 //   Returns false if the node name was already enqueued.
 // - deletes pods immediately if node is already marked as evicted.
 //   Returns false, because the node wasn't added to the queue.
+// 驱逐节点上的 pods
 func (nc *Controller) evictPods(node *v1.Node, pods []*v1.Pod) (bool, error) {
 	nc.evictorLock.Lock()
 	defer nc.evictorLock.Unlock()
@@ -1513,6 +1557,7 @@ func (nc *Controller) markNodeForTainting(node *v1.Node) bool {
 	return nc.zoneNoExecuteTainter[utilnode.GetZoneKey(node)].Add(node.Name, string(node.UID))
 }
 
+// 删除 UnreachableTaint 和 NotReadyTaint,并将节点从 zoneNoExecuteTainter 中删除,最终将节点标记为可达
 func (nc *Controller) markNodeAsReachable(node *v1.Node) (bool, error) {
 	nc.evictorLock.Lock()
 	defer nc.evictorLock.Unlock()

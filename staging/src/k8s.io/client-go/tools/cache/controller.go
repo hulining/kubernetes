@@ -98,6 +98,7 @@ func New(c *Config) Controller {
 // Run begins processing items, and will continue until a value is sent down stopCh.
 // It's an error to call Run more than once.
 // Run blocks; call via go.
+// Trans: Run 开始调用 processLoop() 方法处理 items(worker queue 中的事件),直到发送数据到 stopCh.
 func (c *controller) Run(stopCh <-chan struct{}) {
 	defer utilruntime.HandleCrash()
 	go func() {
@@ -120,6 +121,7 @@ func (c *controller) Run(stopCh <-chan struct{}) {
 	var wg wait.Group
 	defer wg.Wait()
 
+	// 通过 goroutine,启动 r.Run(),r.Run() 用于
 	wg.StartWithChannel(stopCh, r.Run)
 
 	wait.Until(c.processLoop, time.Second, stopCh)
@@ -148,6 +150,8 @@ func (c *controller) LastSyncResourceVersion() string {
 // actually exit when the controller is stopped. Or just give up on this stuff
 // ever being stoppable. Converting this whole package to use Context would
 // also be helpful.
+// processLoop 从 worker queue 中取出对象,并调用 PopProcessFunc 做出处理.
+// 如果处理失败,则会按照配置参数判断是否需要将刚刚取出来的对象重新放到队列中
 func (c *controller) processLoop() {
 	for {
 		obj, err := c.config.Queue.Pop(PopProcessFunc(c.config.Process))

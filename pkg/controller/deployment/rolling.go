@@ -29,6 +29,7 @@ import (
 
 // rolloutRolling implements the logic for rolling a new replica set.
 func (dc *DeploymentController) rolloutRolling(d *apps.Deployment, rsList []*apps.ReplicaSet) error {
+	// 1. 获取到所有新旧版本的 RS
 	newRS, oldRSs, err := dc.getAllReplicaSetsAndSyncRevision(d, rsList, true)
 	if err != nil {
 		return err
@@ -36,6 +37,7 @@ func (dc *DeploymentController) rolloutRolling(d *apps.Deployment, rsList []*app
 	allRSs := append(oldRSs, newRS)
 
 	// Scale up, if we can.
+	// 2. 协调新 RS 副本的数量
 	scaledUp, err := dc.reconcileNewReplicaSet(allRSs, newRS, d)
 	if err != nil {
 		return err
@@ -46,6 +48,7 @@ func (dc *DeploymentController) rolloutRolling(d *apps.Deployment, rsList []*app
 	}
 
 	// Scale down, if we can.
+	// 3. 协调旧 RS 副本的数量
 	scaledDown, err := dc.reconcileOldReplicaSets(allRSs, controller.FilterActiveReplicaSets(oldRSs), newRS, d)
 	if err != nil {
 		return err
@@ -55,6 +58,7 @@ func (dc *DeploymentController) rolloutRolling(d *apps.Deployment, rsList []*app
 		return dc.syncRolloutStatus(allRSs, newRS, d)
 	}
 
+	// 4. 如果状态达到预期,则按照版本保留策略删除旧版本的 deployment 版本记录
 	if deploymentutil.DeploymentComplete(d, &d.Status) {
 		if err := dc.cleanupDeployment(oldRSs, d); err != nil {
 			return err

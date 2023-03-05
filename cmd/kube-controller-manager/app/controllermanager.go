@@ -109,12 +109,14 @@ controller, and serviceaccounts controller.`,
 			verflag.PrintAndExitIfRequested()
 			utilflag.PrintFlags(cmd.Flags())
 
+			// 1. 根据 KnownControllers() 与默认禁用的 controllers 构建 kube-controller-manager 的配置
 			c, err := s.Config(KnownControllers(), ControllersDisabledByDefault.List())
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "%v\n", err)
 				os.Exit(1)
 			}
 
+			// 2. 使用此配置来启动
 			if err := Run(c.Complete(), wait.NeverStop); err != nil {
 				fmt.Fprintf(os.Stderr, "%v\n", err)
 				os.Exit(1)
@@ -176,6 +178,7 @@ func Run(c *config.CompletedConfig, stopCh <-chan struct{}) error {
 
 	// Start the controller manager HTTP server
 	// unsecuredMux is the handler for these controller *after* authn/authz filters have been applied
+	// 1. 启动 controller-manager 的 HTTP server,并添加一些基础的 handler(如 /healthz,/configz,/metrics 等),并为其构建 handler chain
 	var unsecuredMux *mux.PathRecorderMux
 	if c.SecureServing != nil {
 		unsecuredMux = genericcontrollermanager.NewBaseHandler(&c.ComponentConfig.Generic.Debugging, checks...)
@@ -194,6 +197,7 @@ func Run(c *config.CompletedConfig, stopCh <-chan struct{}) error {
 		}
 	}
 
+	// 2. 定义 controller 启动函数,其中包含创建启动 controller 所需资源的上下文.
 	run := func(ctx context.Context) {
 		rootClientBuilder := controller.SimpleControllerClientBuilder{
 			ClientConfig: c.Kubeconfig,
@@ -225,16 +229,19 @@ func Run(c *config.CompletedConfig, stopCh <-chan struct{}) error {
 		} else {
 			clientBuilder = rootClientBuilder
 		}
+		// 2.1 创建 controllerContext,其中包含 controllers 所需要要的资源的引用
 		controllerContext, err := CreateControllerContext(c, rootClientBuilder, clientBuilder, ctx.Done())
 		if err != nil {
 			klog.Fatalf("error building controller context: %v", err)
 		}
 		saTokenControllerInitFunc := serviceAccountTokenControllerStarter{rootClientBuilder: rootClientBuilder}.startServiceAccountTokenController
 
+		// 2.2 启动 controllers
 		if err := StartControllers(controllerContext, saTokenControllerInitFunc, NewControllerInitializers(controllerContext.LoopMode), unsecuredMux); err != nil {
 			klog.Fatalf("error starting controllers: %v", err)
 		}
 
+		// 2.3 启动 InformerFactory,依次启动其中的 informer.
 		controllerContext.InformerFactory.Start(controllerContext.Stop)
 		controllerContext.ObjectOrMetadataInformerFactory.Start(controllerContext.Stop)
 		close(controllerContext.InformersStarted)
@@ -268,6 +275,7 @@ func Run(c *config.CompletedConfig, stopCh <-chan struct{}) error {
 		klog.Fatalf("error creating lock: %v", err)
 	}
 
+	// 调用 run 函数遍历 controller 列表,启动 controllers
 	leaderelection.RunOrDie(context.TODO(), leaderelection.LeaderElectionConfig{
 		Lock:          rl,
 		LeaseDuration: c.ComponentConfig.Generic.LeaderElection.LeaseDuration.Duration,
@@ -343,6 +351,7 @@ func (c ControllerContext) IsControllerEnabled(name string) bool {
 type InitFunc func(ctx ControllerContext) (debuggingHandler http.Handler, enabled bool, err error)
 
 // KnownControllers returns all known controllers's name
+// Trans: 返回现有 controllers 的名称
 func KnownControllers() []string {
 	ret := sets.StringKeySet(NewControllerInitializers(IncludeCloudLoops))
 
@@ -370,19 +379,27 @@ const (
 
 // NewControllerInitializers is a public map of named controller groups (you can start more than one in an init func)
 // paired to their InitFunc.  This allows for structured downstream composition and subdivision.
+// NewControllerInitializers 返回现有 controller 以其启动函数构成的 map 对象
 func NewControllerInitializers(loopMode ControllerLoopMode) map[string]InitFunc {
 	controllers := map[string]InitFunc{}
+	// endpoint 控制器,根据 service 与 pod 的情况控制 endpoint 资源对象的的生命周期
 	controllers["endpoint"] = startEndpointController
 	controllers["endpointslice"] = startEndpointSliceController
 	controllers["replicationcontroller"] = startReplicationController
+	// pod 垃圾回收,主要用于删除 terminated,孤儿 pod(绑定的节点不存在的 pod),由于未被调度而处于 terminated 状态的 pod
 	controllers["podgc"] = startPodGCController
 	controllers["resourcequota"] = startResourceQuotaController
 	controllers["namespace"] = startNamespaceController
+	// saController 控制器,用于确保每个 namespace 中都有 default 的 sa
 	controllers["serviceaccount"] = startServiceAccountController
 	controllers["garbagecollector"] = startGarbageCollectorController
+	// daemonset 控制器,控制运行 daemonset 类型的 pods 达到期望的状态
 	controllers["daemonset"] = startDaemonSetController
+	// JobController 控制运行 job 的 pod 达到期望的状态
 	controllers["job"] = startJobController
+	// deploymentController 控制 deployment 中 RS 达到期望的状态
 	controllers["deployment"] = startDeploymentController
+	// ReplicaSetController 控制属于 ReplicaSet 的 pod 的副本数,并更新 rs 的状态
 	controllers["replicaset"] = startReplicaSetController
 	controllers["horizontalpodautoscaling"] = startHPAController
 	controllers["disruption"] = startDisruptionController
@@ -395,6 +412,7 @@ func NewControllerInitializers(loopMode ControllerLoopMode) map[string]InitFunc 
 	controllers["bootstrapsigner"] = startBootstrapSignerController
 	controllers["tokencleaner"] = startTokenCleanerController
 	controllers["nodeipam"] = startNodeIpamController
+	// 管理 node 的生命周期,根据定期监控的 node 的状态并根据 node 的 condition 添加对应的 taint 标签或者直接驱逐 node 上的 pod
 	controllers["nodelifecycle"] = startNodeLifecycleController
 	if loopMode == IncludeCloudLoops {
 		controllers["service"] = startServiceController
@@ -446,20 +464,25 @@ func GetAvailableResources(clientBuilder controller.ControllerClientBuilder) (ma
 // CreateControllerContext creates a context struct containing references to resources needed by the
 // controllers such as the cloud provider and clientBuilder. rootClientBuilder is only used for
 // the shared-informers client and token controller.
+// CreateControllerContext 创建了 ControllerContext,其中包含 controllers 所需要要的资源的引用
 func CreateControllerContext(s *config.CompletedConfig, rootClientBuilder, clientBuilder controller.ControllerClientBuilder, stop <-chan struct{}) (ControllerContext, error) {
+	// 1. 根据配置构建 versionedClient 对象,根据该对象构建 sharedInformers
 	versionedClient := rootClientBuilder.ClientOrDie("shared-informers")
 	sharedInformers := informers.NewSharedInformerFactory(versionedClient, ResyncPeriod(s)())
 
+	// 2. 根据配置构建 metadataClient 对象,根据该对象构建 sharedInformers
 	metadataClient := metadata.NewForConfigOrDie(rootClientBuilder.ConfigOrDie("metadata-informers"))
 	metadataInformers := metadatainformer.NewSharedInformerFactory(metadataClient, ResyncPeriod(s)())
 
 	// If apiserver is not running we should wait for some time and fail only then. This is particularly
 	// important when we start apiserver and controller manager at the same time.
+	// 3. 等待 apiserver 启动
 	if err := genericcontrollermanager.WaitForAPIServer(versionedClient, 10*time.Second); err != nil {
 		return ControllerContext{}, fmt.Errorf("failed to wait for apiserver being healthy: %v", err)
 	}
 
 	// Use a discovery client capable of being refreshed.
+	// 4. 构建 discoveryClient,cachedClient,restMapper 等对象
 	discoveryClient := rootClientBuilder.ClientOrDie("controller-discovery")
 	cachedClient := cacheddiscovery.NewMemCacheClient(discoveryClient.Discovery())
 	restMapper := restmapper.NewDeferredDiscoveryRESTMapper(cachedClient)
@@ -508,6 +531,7 @@ func StartControllers(ctx ControllerContext, startSATokenController InitFunc, co
 		ctx.Cloud.Initialize(ctx.ClientBuilder, ctx.Stop)
 	}
 
+	// 遍历 controllers 列表
 	for controllerName, initFn := range controllers {
 		if !ctx.IsControllerEnabled(controllerName) {
 			klog.Warningf("%q is disabled", controllerName)
@@ -517,6 +541,7 @@ func StartControllers(ctx ControllerContext, startSATokenController InitFunc, co
 		time.Sleep(wait.Jitter(ctx.ComponentConfig.Generic.ControllerStartInterval.Duration, ControllerStartJitter))
 
 		klog.V(1).Infof("Starting %q", controllerName)
+		// 依次调用 controller 的 InitFunc,启动 controller
 		debugHandler, started, err := initFn(ctx)
 		if err != nil {
 			klog.Errorf("Error starting %q", controllerName)
@@ -526,6 +551,7 @@ func StartControllers(ctx ControllerContext, startSATokenController InitFunc, co
 			klog.Warningf("Skipping %q", controllerName)
 			continue
 		}
+		// 如果 controller 支持 debug,则在路由中添加 "/debug/controllers/${controllerName}" 及其 handler
 		if debugHandler != nil && unsecuredMux != nil {
 			basePath := "/debug/controllers/" + controllerName
 			unsecuredMux.UnlistedHandle(basePath, http.StripPrefix(basePath, debugHandler))

@@ -84,15 +84,18 @@ func (gcc *PodGCController) Run(stop <-chan struct{}) {
 	<-stop
 }
 
+// pod 垃圾回收
 func (gcc *PodGCController) gc() {
 	pods, err := gcc.podLister.List(labels.Everything())
 	if err != nil {
 		klog.Errorf("Error while listing all Pods: %v", err)
 		return
 	}
+	// 根据 --terminated-pod-gc-threshold 判断是否需要回收 terminated 状态的 pod,保留个数为该参数指定的值
 	if gcc.terminatedPodThreshold > 0 {
 		gcc.gcTerminated(pods)
 	}
+	// 回收孤儿 pods(绑定的节点不存在的 pod),回收没有被调度的 pod
 	gcc.gcOrphaned(pods)
 	gcc.gcUnscheduledTerminating(pods)
 }

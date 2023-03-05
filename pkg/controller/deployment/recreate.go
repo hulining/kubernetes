@@ -35,6 +35,7 @@ func (dc *DeploymentController) rolloutRecreate(d *apps.Deployment, rsList []*ap
 	activeOldRSs := controller.FilterActiveReplicaSets(oldRSs)
 
 	// scale down old replica sets.
+	// 1. 更新旧的 RS replica 副本数为 0,因此会先删除旧的 pod,再创建新的 pod
 	scaledDown, err := dc.scaleDownOldReplicaSetsForRecreate(activeOldRSs, d)
 	if err != nil {
 		return err

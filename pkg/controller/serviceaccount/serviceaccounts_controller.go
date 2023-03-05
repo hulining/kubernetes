@@ -200,6 +200,7 @@ func (c *ServiceAccountsController) syncNamespace(key string) error {
 	}
 
 	createFailures := []error{}
+	// 遍历 serviceAccountsToEnsure sa 列表(这里只有一个 "default" 的 sa),在名称空间中创建
 	for _, sa := range c.serviceAccountsToEnsure {
 		switch _, err := c.saLister.ServiceAccounts(ns.Name).Get(sa.Name); {
 		case err == nil:

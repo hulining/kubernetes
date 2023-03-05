@@ -423,6 +423,7 @@ func startServiceAccountController(ctx ControllerContext) (http.Handler, bool, e
 		ctx.InformerFactory.Core().V1().ServiceAccounts(),
 		ctx.InformerFactory.Core().V1().Namespaces(),
 		ctx.ClientBuilder.ClientOrDie("service-account-controller"),
+		// 这里只有一个 default 的 sa
 		serviceaccountcontroller.DefaultServiceAccountsControllerOptions(),
 	)
 	if err != nil {

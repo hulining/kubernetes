@@ -45,11 +45,14 @@ func (dc *DeploymentController) syncStatusOnly(d *apps.Deployment, rsList []*app
 
 // sync is responsible for reconciling deployments on scaling events or when they
 // are paused.
+// Trans: sync 负责协调扩缩容或 paused 时的 deployments
 func (dc *DeploymentController) sync(d *apps.Deployment, rsList []*apps.ReplicaSet) error {
+	// 1. 分别获取到新旧版本的 RS 对象列表
 	newRS, oldRSs, err := dc.getAllReplicaSetsAndSyncRevision(d, rsList, false)
 	if err != nil {
 		return err
 	}
+	// 2. 更新 newRS 与 oldRS 对应的副本数
 	if err := dc.scale(d, newRS, oldRSs); err != nil {
 		// If we get an error while trying to scale, the deployment will be requeued
 		// so we can abort this resync
@@ -57,12 +60,14 @@ func (dc *DeploymentController) sync(d *apps.Deployment, rsList []*apps.ReplicaS
 	}
 
 	// Clean up the deployment when it's paused and no rollback is in flight.
+	// 3. 当 deployment 处于 pause 状态,且没有 "deprecated.deployment.rollback.to" annotations 时,删除该 deployment
 	if d.Spec.Paused && getRollbackTo(d) == nil {
 		if err := dc.cleanupDeployment(oldRSs, d); err != nil {
 			return err
 		}
 	}
 
+	// 4.  检查 deployment 状态是否是最新的,如果有需要的话,则更新其状态信息
 	allRSs := append(oldRSs, newRS)
 	return dc.syncDeploymentStatus(allRSs, newRS, d)
 }
@@ -70,10 +75,12 @@ func (dc *DeploymentController) sync(d *apps.Deployment, rsList []*apps.ReplicaS
 // checkPausedConditions checks if the given deployment is paused or not and adds an appropriate condition.
 // These conditions are needed so that we won't accidentally report lack of progress for resumed deployments
 // that were paused for longer than progressDeadlineSeconds.
+// Trans: checkPausedConditions 用于检查给定的 deployment 是否处于 paused 状态
 func (dc *DeploymentController) checkPausedConditions(d *apps.Deployment) error {
 	if !deploymentutil.HasProgressDeadline(d) {
 		return nil
 	}
+	// 1. 获取 Deployment 当前的状态
 	cond := deploymentutil.GetDeploymentCondition(d.Status, apps.DeploymentProgressing)
 	if cond != nil && cond.Reason == deploymentutil.TimedOutReason {
 		// If we have reported lack of progress, do not overwrite it with a paused condition.
@@ -81,6 +88,7 @@ func (dc *DeploymentController) checkPausedConditions(d *apps.Deployment) error 
 	}
 	pausedCondExists := cond != nil && cond.Reason == deploymentutil.PausedDeployReason
 
+	// 2. 根据 deployment 对象内保存的是否处于 Paused 状态与 status.Cond 状态判断该 deployment 对象是否需要更新
 	needsUpdate := false
 	if d.Spec.Paused && !pausedCondExists {
 		condition := deploymentutil.NewDeploymentCondition(apps.DeploymentProgressing, v1.ConditionUnknown, deploymentutil.PausedDeployReason, "Deployment is paused")
@@ -96,6 +104,7 @@ func (dc *DeploymentController) checkPausedConditions(d *apps.Deployment) error 
 		return nil
 	}
 
+	// 3. 如果需要更新,则更新 Deployments 对象
 	var err error
 	d, err = dc.client.AppsV1().Deployments(d.Namespace).UpdateStatus(d)
 	return err
@@ -112,6 +121,7 @@ func (dc *DeploymentController) checkPausedConditions(d *apps.Deployment) error 
 //
 // Note that currently the deployment controller is using caches to avoid querying the server for reads.
 // This may lead to stale reads of replica sets, thus incorrect deployment status.
+// Trans: getAllReplicaSetsAndSyncRevision 获取到新旧版本的 RS 对象列表
 func (dc *DeploymentController) getAllReplicaSetsAndSyncRevision(d *apps.Deployment, rsList []*apps.ReplicaSet, createIfNotExisted bool) (*apps.ReplicaSet, []*apps.ReplicaSet, error) {
 	_, allOldRSs := deploymentutil.FindOldReplicaSets(d, rsList)
 
@@ -135,8 +145,10 @@ const (
 // 3. If there's no existing new RS and createIfNotExisted is true, create one with appropriate revision number (maxOldRevision + 1) and replicas.
 // Note that the pod-template-hash will be added to adopted RSes and pods.
 func (dc *DeploymentController) getNewReplicaSet(d *apps.Deployment, rsList, oldRSs []*apps.ReplicaSet, createIfNotExisted bool) (*apps.ReplicaSet, error) {
+	// 1. 获取现有的新RS(由 Deployment 产生的新的 RS 的 pod 模板与 Deployment 的相同)
 	existingNewRS := deploymentutil.FindNewReplicaSet(d, rsList)
 
+	// 2. 获取旧 RS 中最大 Revision,并在此基础上 +1,配置为新的 Revision
 	// Calculate the max revision number among all old RSes
 	maxOldRevision := deploymentutil.MaxRevision(oldRSs)
 	// Calculate revision number for this new replica set
@@ -146,6 +158,7 @@ func (dc *DeploymentController) getNewReplicaSet(d *apps.Deployment, rsList, old
 	// annotationsToSkip from the parent deployment, and update revision, desiredReplicas,
 	// and maxReplicas) and also update the revision annotation in the deployment with the
 	// latest revision.
+	// 3. Trans: 如果最新的 RS 存在,则需要同步 annotations,并使用最新的 revision 更新 deployment 中的 revision annotation.最终返回 existingNewRS 的 copy 对象
 	if existingNewRS != nil {
 		rsCopy := existingNewRS.DeepCopy()
 
@@ -183,6 +196,7 @@ func (dc *DeploymentController) getNewReplicaSet(d *apps.Deployment, rsList, old
 		return nil, nil
 	}
 
+	// 4. 如果新 RS 不存在,且 createIfNotExisted 为 true,则创建一个具有正确 revision(maxOldRevision + 1)和副本的 RS.并更新 deployment
 	// new ReplicaSet does not exist, create one.
 	newRSTemplate := *d.Spec.Template.DeepCopy()
 	podTemplateSpecHash := controller.ComputeHash(&newRSTemplate, d.Status.CollisionCount)
@@ -304,6 +318,7 @@ func (dc *DeploymentController) scale(deployment *apps.Deployment, newRS *apps.R
 
 	// If the new replica set is saturated, old replica sets should be fully scaled down.
 	// This case handles replica set adoption during a saturated new replica set.
+	// 1. 如果新的 RS  的可用副本数已经达到 deployment 期望副本数,则将所有的旧的 RS 对象的副本数更新为 0
 	if deploymentutil.IsSaturated(deployment, newRS) {
 		for _, old := range controller.FilterActiveReplicaSets(oldRSs) {
 			if _, _, err := dc.scaleReplicaSetAndRecordEvent(old, 0, deployment); err != nil {
@@ -316,10 +331,13 @@ func (dc *DeploymentController) scale(deployment *apps.Deployment, newRS *apps.R
 	// There are old replica sets with pods and the new replica set is not saturated.
 	// We need to proportionally scale all replica sets (new and old) in case of a
 	// rolling deployment.
+	// 2. 如果 deployment 处于 RollingUpdate 阶段
 	if deploymentutil.IsRollingUpdate(deployment) {
+		// 2.1 找到 Replicas 大于 0 的所有 RS,并获取到其 Replicas 总和
 		allRSs := controller.FilterActiveReplicaSets(append(oldRSs, newRS))
 		allRSsReplicas := deploymentutil.GetReplicaCountForReplicaSets(allRSs)
 
+		// 2.2 计算出 deployment 最大允许的 Replicas 副本数值,并计算出需要增加&减少的副本数
 		allowedSize := int32(0)
 		if *(deployment.Spec.Replicas) > 0 {
 			allowedSize = *(deployment.Spec.Replicas) + deploymentutil.MaxSurge(*deployment)
@@ -349,6 +367,7 @@ func (dc *DeploymentController) scale(deployment *apps.Deployment, newRS *apps.R
 		// Iterate over all active replica sets and estimate proportions for each of them.
 		// The absolute value of deploymentReplicasAdded should never exceed the absolute
 		// value of deploymentReplicasToAdd.
+		// 2.3 依次计算出每个 RS 需要更新的个数,保存到 nameToSize 中,并按照 nameToSize 中的值更新每个 RS
 		deploymentReplicasAdded := int32(0)
 		nameToSize := make(map[string]int32)
 		for i := range allRSs {
@@ -428,6 +447,7 @@ func (dc *DeploymentController) scaleReplicaSet(rs *apps.ReplicaSet, newScale in
 // cleanupDeployment is responsible for cleaning up a deployment ie. retains all but the latest N old replica sets
 // where N=d.Spec.RevisionHistoryLimit. Old replica sets are older versions of the podtemplate of a deployment kept
 // around by default 1) for historical reasons and 2) for the ability to rollback a deployment.
+// Trans: cleanupDeployment 用于删除 deployment,仅保留 N=d.Spec.RevisionHistoryLimit 的最新版本的旧副本集
 func (dc *DeploymentController) cleanupDeployment(oldRSs []*apps.ReplicaSet, deployment *apps.Deployment) error {
 	if !deploymentutil.HasRevisionHistoryLimit(deployment) {
 		return nil
@@ -444,6 +464,7 @@ func (dc *DeploymentController) cleanupDeployment(oldRSs []*apps.ReplicaSet, dep
 		return nil
 	}
 
+	// 按照时间戳进行排序后,删除 diff 个,以到达期望保留的 RevisionHistoryLimit 个历史记录
 	sort.Sort(controller.ReplicaSetsByCreationTimestamp(cleanableRSes))
 	klog.V(4).Infof("Looking to cleanup old replica sets for deployment %q", deployment.Name)
 
@@ -465,6 +486,7 @@ func (dc *DeploymentController) cleanupDeployment(oldRSs []*apps.ReplicaSet, dep
 }
 
 // syncDeploymentStatus checks if the status is up-to-date and sync it if necessary
+// Trans: syncDeploymentStatus 检查 deployment 状态是否是最新的,如果有需要的话,则更新其状态信息
 func (dc *DeploymentController) syncDeploymentStatus(allRSs []*apps.ReplicaSet, newRS *apps.ReplicaSet, d *apps.Deployment) error {
 	newStatus := calculateStatus(allRSs, newRS, d)
 

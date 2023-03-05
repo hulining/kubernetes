@@ -180,9 +180,11 @@ func (r *ControllerExpectations) DeleteExpectations(controllerKey string) {
 // manager.
 func (r *ControllerExpectations) SatisfiedExpectations(controllerKey string) bool {
 	if exp, exists, err := r.GetExpectations(controllerKey); exists {
+		// 1. 当创建或删除发生错误的次数都 <= 0时, return true
 		if exp.Fulfilled() {
 			klog.V(4).Infof("Controller expectations fulfilled %#v", exp)
 			return true
+		// 2. 该 key 在 ControllerExpectations 中已经超过 5min 没有更新时, return true
 		} else if exp.isExpired() {
 			klog.V(4).Infof("Controller expectations expired %#v", exp)
 			return true
@@ -191,6 +193,7 @@ func (r *ControllerExpectations) SatisfiedExpectations(controllerKey string) boo
 			return false
 		}
 	} else if err != nil {
+		// 发生错误时, return true
 		klog.V(2).Infof("Error encountered while checking expectations %#v, forcing sync", err)
 	} else {
 		// When a new controller is created, it doesn't have expectations.
@@ -198,6 +201,7 @@ func (r *ControllerExpectations) SatisfiedExpectations(controllerKey string) boo
 		//	- In this case it wakes up, creates/deletes controllees, and sets expectations again.
 		// When it has satisfied expectations and no controllees need to be created/destroyed > TTL, the expectations expire.
 		//	- In this case it continues without setting expectations till it needs to create/delete controllees.
+		// 3.  新的 controller 被创建时,没有 expectations 时,return true
 		klog.V(4).Infof("Controller %v either never recorded expectations, or the ttl expired.", controllerKey)
 	}
 	// Trigger a sync if we either encountered and error (which shouldn't happen since we're
@@ -998,6 +1002,7 @@ func RemoveTaintOffNode(c clientset.Interface, nodeName string, node *v1.Node, t
 }
 
 // PatchNodeTaints patches node's taints.
+// Trans: PatchNodeTaints 给 node 的 taints 打 patch,更新 traints.
 func PatchNodeTaints(c clientset.Interface, nodeName string, oldNode *v1.Node, newNode *v1.Node) error {
 	oldData, err := json.Marshal(oldNode)
 	if err != nil {

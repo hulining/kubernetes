@@ -456,13 +456,17 @@ func (rsc *ReplicaSetController) processNextWorkItem() bool {
 // manageReplicas checks and updates replicas for the given ReplicaSet.
 // Does NOT modify <filteredPods>.
 // It will requeue the replica set in case of an error while creating/deleting pods.
+// Trans: manageReplicas 检查并更新给定 ReplicaSet 的副本数
 func (rsc *ReplicaSetController) manageReplicas(filteredPods []*v1.Pod, rs *apps.ReplicaSet) error {
+	// 1. 计算属于 rs 的正在运行的 pod 与 Replicas 的差值
 	diff := len(filteredPods) - int(*(rs.Spec.Replicas))
 	rsKey, err := controller.KeyFunc(rs)
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("Couldn't get key for %v %#v: %v", rsc.Kind, rs, err))
 		return nil
 	}
+	// 2. 如果正常运行的比期望的小,则使用 CreatePodsWithControllerRef 创建需要创建的属于 rs 的 pod,
+	//    如果正常运行的比期望的大,则删除需要删除的 pod;已达到目标期望副本数
 	if diff < 0 {
 		diff *= -1
 		if diff > rsc.burstReplicas {
@@ -556,6 +560,7 @@ func (rsc *ReplicaSetController) syncReplicaSet(key string) error {
 		klog.V(4).Infof("Finished syncing %v %q (%v)", rsc.Kind, key, time.Since(startTime))
 	}()
 
+	// 1. 列出 rs 对象
 	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		return err
@@ -570,7 +575,9 @@ func (rsc *ReplicaSetController) syncReplicaSet(key string) error {
 		return err
 	}
 
+	// 2. 判断是否需要 rsync
 	rsNeedsSync := rsc.expectations.SatisfiedExpectations(key)
+	// 3. 筛选出 rs 管理的正在运行的 pod
 	selector, err := metav1.LabelSelectorAsSelector(rs.Spec.Selector)
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("Error converting pod selector to selector: %v", err))
@@ -596,8 +603,10 @@ func (rsc *ReplicaSetController) syncReplicaSet(key string) error {
 
 	var manageReplicasErr error
 	if rsNeedsSync && rs.DeletionTimestamp == nil {
+		// 4. 管理给定 rs 期望的 pod 副本数
 		manageReplicasErr = rsc.manageReplicas(filteredPods, rs)
 	}
+	// 5. 计算并更新 rs 的状态
 	rs = rs.DeepCopy()
 	newStatus := calculateStatus(rs, filteredPods, manageReplicasErr)
 

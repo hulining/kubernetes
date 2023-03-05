@@ -811,6 +811,7 @@ func DeploymentTimedOut(deployment *apps.Deployment, newStatus *apps.DeploymentS
 // When one of the followings is true, we're rolling out the deployment; otherwise, we're scaling it.
 // 1) The new RS is saturated: newRS's replicas == deployment's replicas
 // 2) Max number of pods allowed is reached: deployment's replicas + maxSurge == all RSs' replicas
+// Trans: NewRSNewReplicas 计算 deployment 的新 RS 应该有的 replicas 数量
 func NewRSNewReplicas(deployment *apps.Deployment, allRSs []*apps.ReplicaSet, newRS *apps.ReplicaSet) (int32, error) {
 	switch deployment.Spec.Strategy.Type {
 	case apps.RollingUpdateDeploymentStrategyType:

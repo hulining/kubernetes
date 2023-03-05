@@ -42,6 +42,7 @@ import (
 // DeletePods will delete all pods from master running on given node,
 // and return true if any pods were deleted, or were found pending
 // deletion.
+// Trans: DeletePods 将删除在给定节点上运行的 pods
 func DeletePods(kubeClient clientset.Interface, pods []*v1.Pod, recorder record.EventRecorder, nodeName, nodeUID string, daemonStore appsv1listers.DaemonSetLister) (bool, error) {
 	remaining := false
 	var updateErrList []error
@@ -59,6 +60,7 @@ func DeletePods(kubeClient clientset.Interface, pods []*v1.Pod, recorder record.
 		// Pod will be modified, so making copy is requiered.
 		pod := pods[i].DeepCopy()
 		// Set reason and message in the pod object.
+		// 设置 pod Termination reason 和 message
 		if _, err := SetPodTerminationReason(kubeClient, pod, nodeName); err != nil {
 			if apierrors.IsConflict(err) {
 				updateErrList = append(updateErrList,
@@ -67,11 +69,13 @@ func DeletePods(kubeClient clientset.Interface, pods []*v1.Pod, recorder record.
 			}
 		}
 		// if the pod has already been marked for deletion, we still return true that there are remaining pods.
+		// 如果 pod 配置了 DeletionGracePeriodSeconds 事件,则保留
 		if pod.DeletionGracePeriodSeconds != nil {
 			remaining = true
 			continue
 		}
 		// if the pod is managed by a daemonset, ignore it
+		// 如果 pod 是被 daemonset 管理的,则忽略
 		if _, err := daemonStore.GetPodDaemonSets(pod); err == nil {
 			// No error means at least one daemonset was found
 			continue
@@ -79,6 +83,7 @@ func DeletePods(kubeClient clientset.Interface, pods []*v1.Pod, recorder record.
 
 		klog.V(2).Infof("Starting deletion of pod %v/%v", pod.Namespace, pod.Name)
 		recorder.Eventf(pod, v1.EventTypeNormal, "NodeControllerEviction", "Marking for deletion Pod %s from Node %s", pod.Name, nodeName)
+		// 删除 pod
 		if err := kubeClient.CoreV1().Pods(pod.Namespace).Delete(pod.Name, nil); err != nil {
 			if apierrors.IsNotFound(err) {
 				// NotFound error means that pod was already deleted.
@@ -190,6 +195,7 @@ func SwapNodeControllerTaint(kubeClient clientset.Interface, taintsToAdd, taints
 		taintToAdd.TimeAdded = &now
 	}
 
+	// 1. 添加或更新需要添加的 taints
 	err := controller.AddOrUpdateTaintOnNode(kubeClient, node.Name, taintsToAdd...)
 	if err != nil {
 		utilruntime.HandleError(
@@ -202,6 +208,7 @@ func SwapNodeControllerTaint(kubeClient clientset.Interface, taintsToAdd, taints
 	}
 	klog.V(4).Infof("Added %+v Taint to Node %v", taintsToAdd, node.Name)
 
+	// 2. 删除需要删除的 taints
 	err = controller.RemoveTaintOffNode(kubeClient, node.Name, node, taintsToRemove...)
 	if err != nil {
 		utilruntime.HandleError(

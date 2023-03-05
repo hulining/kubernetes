@@ -38,6 +38,7 @@ func (dc *DeploymentController) rollback(d *apps.Deployment, rsList []*apps.Repl
 	allRSs := append(allOldRSs, newRS)
 	rollbackTo := getRollbackTo(d)
 	// If rollback revision is 0, rollback to the last revision
+	// 1. 如果 rollbackTo.Revision 为 0,则回滚到最近的 revision.如果最近的 revision 也为0,则放弃更新
 	if rollbackTo.Revision == 0 {
 		if rollbackTo.Revision = deploymentutil.LastRevision(allRSs); rollbackTo.Revision == 0 {
 			// If we still can't find the last revision, gives up rollback
@@ -46,6 +47,7 @@ func (dc *DeploymentController) rollback(d *apps.Deployment, rsList []*apps.Repl
 			return dc.updateDeploymentAndClearRollbackTo(d)
 		}
 	}
+	// 2. 否则,遍历更新所有 RS 对象,判断 Revision 是否符合条件,如果符合,则使用该 RS 更新 deployment
 	for _, rs := range allRSs {
 		v, err := deploymentutil.Revision(rs)
 		if err != nil {
@@ -66,6 +68,7 @@ func (dc *DeploymentController) rollback(d *apps.Deployment, rsList []*apps.Repl
 	}
 	dc.emitRollbackWarningEvent(d, deploymentutil.RollbackRevisionNotFound, "Unable to find the revision to rollback to.")
 	// Gives up rollback
+	// 3. 如果以上条件都不满足,则放弃更新
 	return dc.updateDeploymentAndClearRollbackTo(d)
 }
 
@@ -75,6 +78,9 @@ func (dc *DeploymentController) rollback(d *apps.Deployment, rsList []*apps.Repl
 func (dc *DeploymentController) rollbackToTemplate(d *apps.Deployment, rs *apps.ReplicaSet) (bool, error) {
 	performedRollback := false
 	if !deploymentutil.EqualIgnoreHash(&d.Spec.Template, &rs.Spec.Template) {
+		// 如果 deployment.spec.Template 的 hash 值与 rs.Spec.Template 的不一致,则
+		// 1. 使用 rs.Spec.Template 的内容更新 deployment.Template
+		// 2. 使用 rs.annotations 更新 deployment.annotations
 		klog.V(4).Infof("Rolling back deployment %q to template spec %+v", d.Name, rs.Spec.Template.Spec)
 		deploymentutil.SetFromReplicaSetTemplate(d, rs.Spec.Template)
 		// set RS (the old RS we'll rolling back to) annotations back to the deployment;
@@ -110,6 +116,7 @@ func (dc *DeploymentController) emitRollbackNormalEvent(d *apps.Deployment, mess
 // updateDeploymentAndClearRollbackTo sets .spec.rollbackTo to nil and update the input deployment
 // It is assumed that the caller will have updated the deployment template appropriately (in case
 // we want to rollback).
+// Trans: updateDeploymentAndClearRollbackTo 配置 .spec.annotations.rollbackTo 为空,并更新 deployment
 func (dc *DeploymentController) updateDeploymentAndClearRollbackTo(d *apps.Deployment) error {
 	klog.V(4).Infof("Cleans up rollbackTo of deployment %q", d.Name)
 	setRollbackTo(d, nil)

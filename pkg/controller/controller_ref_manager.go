@@ -168,6 +168,7 @@ func NewPodControllerRefManager(
 //
 // If the error is nil, either the reconciliation succeeded, or no
 // reconciliation was necessary. The list of Pods that you now own is returned.
+// Trans: 尝试从 pods 列表中筛选出符合 filters 或 owerRef 的 pods 列表
 func (m *PodControllerRefManager) ClaimPods(pods []*v1.Pod, filters ...func(*v1.Pod) bool) ([]*v1.Pod, error) {
 	var claimed []*v1.Pod
 	var errlist []error

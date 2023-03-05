@@ -354,6 +354,7 @@ func (e *EndpointController) syncService(key string) error {
 		klog.V(4).Infof("Finished syncing service %q endpoints. (%v)", key, time.Since(startTime))
 	}()
 
+	// 1. 获取关联的 service 对象
 	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		return err
@@ -369,6 +370,7 @@ func (e *EndpointController) syncService(key string) error {
 		// service is deleted. However, if we're down at the time when
 		// the service is deleted, we will miss that deletion, so this
 		// doesn't completely solve the problem. See #6877.
+		// 如果中间发生错误,则表示 service 已经被删除,则直接删除 Endpoints
 		err = e.client.CoreV1().Endpoints(namespace).Delete(name, nil)
 		if err != nil && !errors.IsNotFound(err) {
 			return err
@@ -383,6 +385,7 @@ func (e *EndpointController) syncService(key string) error {
 		return nil
 	}
 
+	// 2. 根据 service 对象的 Selector 筛选出符合条件的 pods 列表
 	klog.V(5).Infof("About to update endpoints for service %q", key)
 	pods, err := e.podLister.Pods(service.Namespace).List(labels.Set(service.Spec.Selector).AsSelectorPreValidated())
 	if err != nil {
@@ -408,6 +411,7 @@ func (e *EndpointController) syncService(key string) error {
 	endpointsLastChangeTriggerTime := e.triggerTimeTracker.
 		ComputeEndpointLastChangeTriggerTime(namespace, service, pods)
 
+	// 3. 遍历 pods 对象,将构建的 EndpointAddress 对象按指定的规则构建 EndpointSubset,并将其添加到 EndpointSubset 列表对象中
 	subsets := []v1.EndpointSubset{}
 	var totalReadyEps int
 	var totalNotReadyEps int
@@ -422,6 +426,7 @@ func (e *EndpointController) syncService(key string) error {
 			continue
 		}
 
+		// 根据 svc 与 pods 信息构建 EndpointAddress 对象
 		ep, err := podToEndpointAddressForService(service, pod)
 		if err != nil {
 			// this will happen, if the cluster runs with some nodes configured as dual stack and some as not
@@ -465,6 +470,7 @@ func (e *EndpointController) syncService(key string) error {
 	subsets = endpoints.RepackSubsets(subsets)
 
 	// See if there's actually an update here.
+	// 4. 获取当前 Endpoints 状态,如果错误为 notFound,则根据 service信息创建一个
 	currentEndpoints, err := e.endpointsLister.Endpoints(service.Namespace).Get(service.Name)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -479,6 +485,7 @@ func (e *EndpointController) syncService(key string) error {
 		}
 	}
 
+	// 5. 根据当前 Endpoints.ResourceVersion 判断是否需要创建新的 Endpoints.如果 ResourceVersion 长度为 0,则表示之前没有,需要创建.否则均为更新
 	createEndpoints := len(currentEndpoints.ResourceVersion) == 0
 
 	if !createEndpoints &&
@@ -487,6 +494,7 @@ func (e *EndpointController) syncService(key string) error {
 		klog.V(5).Infof("endpoints are equal for %s/%s, skipping update", service.Namespace, service.Name)
 		return nil
 	}
+	// 6. 将当前 Endpoints 复制,并在复制后的 newEndpoints 基础上做更新
 	newEndpoints := currentEndpoints.DeepCopy()
 	newEndpoints.Subsets = subsets
 	newEndpoints.Labels = service.Labels
@@ -511,6 +519,7 @@ func (e *EndpointController) syncService(key string) error {
 		newEndpoints.Labels = utillabels.CloneAndRemoveLabel(newEndpoints.Labels, v1.IsHeadlessService)
 	}
 
+	// 7. 创建或更新 newEndpoints 对象
 	klog.V(4).Infof("Update endpoints for %v/%v, ready: %d not ready: %d", service.Namespace, service.Name, totalReadyEps, totalNotReadyEps)
 	if createEndpoints {
 		// No previous endpoints, create them

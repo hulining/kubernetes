@@ -203,6 +203,7 @@ func (le *LeaderElector) Run(ctx context.Context) {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// 使用 goroutine 启动 controller
 	go le.config.Callbacks.OnStartedLeading(ctx)
 	le.renew(ctx)
 }

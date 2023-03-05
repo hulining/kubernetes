@@ -527,6 +527,7 @@ func (dc *DeploymentController) getReplicaSetsForDeployment(d *apps.Deployment) 
 // according to the Pod's ControllerRef.
 // NOTE: The pod pointers returned by this method point the the pod objects in the cache and thus
 // shouldn't be modified in any way.
+// Trans: getPodMapForDeployment 根据 pod 的 ControllerRef,返回 ReplicaSet UID 与被该 RS 管理的 pods 列表 的 map
 func (dc *DeploymentController) getPodMapForDeployment(d *apps.Deployment, rsList []*apps.ReplicaSet) (map[types.UID][]*v1.Pod, error) {
 	// Get all Pods that potentially belong to this Deployment.
 	selector, err := metav1.LabelSelectorAsSelector(d.Spec.Selector)
@@ -566,6 +567,7 @@ func (dc *DeploymentController) syncDeployment(key string) error {
 		klog.V(4).Infof("Finished syncing deployment %q (%v)", key, time.Since(startTime))
 	}()
 
+	// 1. 列出指定 Deployments 对象
 	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
 		return err
@@ -593,6 +595,7 @@ func (dc *DeploymentController) syncDeployment(key string) error {
 		return nil
 	}
 
+	// 2. 列出属于该 Deployment 的 ReplicaSets
 	// List ReplicaSets owned by this Deployment, while reconciling ControllerRef
 	// through adoption/orphaning.
 	rsList, err := dc.getReplicaSetsForDeployment(d)
@@ -604,11 +607,13 @@ func (dc *DeploymentController) syncDeployment(key string) error {
 	//
 	// * check if a Pod is labeled correctly with the pod-template-hash label.
 	// * check that no old Pods are running in the middle of Recreate Deployments.
+	// 3. 获取属于该 Deployment 管理的 pods map 对象
 	podMap, err := dc.getPodMapForDeployment(d, rsList)
 	if err != nil {
 		return err
 	}
 
+	// 4. 如果 Deployment 被删除了,则只更新 Deployment 的状态,而不做其他任何操作
 	if d.DeletionTimestamp != nil {
 		return dc.syncStatusOnly(d, rsList)
 	}
@@ -616,10 +621,12 @@ func (dc *DeploymentController) syncDeployment(key string) error {
 	// Update deployment conditions with an Unknown condition when pausing/resuming
 	// a deployment. In this way, we can be sure that we won't timeout when a user
 	// resumes a Deployment with a set progressDeadlineSeconds.
+	// 5. 检查给定的 deployment 是否处于 paused 状态,并同步 deployment 对象的状态
 	if err = dc.checkPausedConditions(d); err != nil {
 		return err
 	}
 
+	// 6. 如果处于 Paused 状态,则同步
 	if d.Spec.Paused {
 		return dc.sync(d, rsList)
 	}
@@ -627,10 +634,12 @@ func (dc *DeploymentController) syncDeployment(key string) error {
 	// rollback is not re-entrant in case the underlying replica sets are updated with a new
 	// revision so we should ensure that we won't proceed to update replica sets until we
 	// make sure that the deployment has cleaned up its rollback spec in subsequent enqueues.
+	// 7. 如果可以获取到 "deprecated.deployment.rollback.to" 值,则进行回滚
 	if getRollbackTo(d) != nil {
 		return dc.rollback(d, rsList)
 	}
 
+	// 8. 如果正处于扩缩容事件状态下,则执行同步
 	scalingEvent, err := dc.isScalingEvent(d, rsList)
 	if err != nil {
 		return err
@@ -639,6 +648,7 @@ func (dc *DeploymentController) syncDeployment(key string) error {
 		return dc.sync(d, rsList)
 	}
 
+	// 9. 根据配置的更新策略,执行不同的更新逻辑
 	switch d.Spec.Strategy.Type {
 	case apps.RecreateDeploymentStrategyType:
 		return dc.rolloutRecreate(d, rsList, podMap)

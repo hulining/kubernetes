@@ -328,6 +328,7 @@ func (s *sharedIndexInformer) Run(stopCh <-chan struct{}) {
 		defer s.startedLock.Unlock()
 		s.stopped = true // Don't want any new listeners
 	}()
+	// 调用 sharedIndexInformer 中的 controller 来处理事件
 	s.controller.Run(stopCh)
 }
 
