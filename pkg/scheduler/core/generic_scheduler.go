@@ -186,15 +186,19 @@ func (g *genericScheduler) snapshot() error {
 // Schedule tries to schedule the given pod to one of the nodes in the node list.
 // If it succeeds, it will return the name of the node.
 // If it fails, it will return a FitError error with reasons.
+// Schedule 尝试将给定的 pod 调度到节点列表中的一个节点上.如果成功,则返回节点的名称,否则返回失败的原因
 func (g *genericScheduler) Schedule(pod *v1.Pod, pluginContext *framework.PluginContext) (result ScheduleResult, err error) {
+	// 一. 基础检查
 	trace := utiltrace.New("Scheduling", utiltrace.Field{Key: "namespace", Value: pod.Namespace}, utiltrace.Field{Key: "name", Value: pod.Name})
 	defer trace.LogIfLong(100 * time.Millisecond)
 
+	// 1. 对 pod 做一些基础的检查,主要是检查 pvc
 	if err := podPassesBasicChecks(pod, g.pvcLister); err != nil {
 		return result, err
 	}
 
 	// Run "prefilter" plugins.
+	// 2. 运行 prefilter 插件
 	preFilterStatus := g.framework.RunPreFilterPlugins(pluginContext, pod)
 	if !preFilterStatus.IsSuccess() {
 		return result, preFilterStatus.AsError()
@@ -205,23 +209,28 @@ func (g *genericScheduler) Schedule(pod *v1.Pod, pluginContext *framework.Plugin
 		return result, ErrNoNodesAvailable
 	}
 
+	// 3. 对 scheduler cache 和节点信息做快照
 	if err := g.snapshot(); err != nil {
 		return result, err
 	}
 
 	trace.Step("Basic checks done")
+	// 二. 基础检查完成,开始 predicates 阶段
 	startPredicateEvalTime := time.Now()
+	// 4. 运行 filter 插件
 	filteredNodes, failedPredicateMap, filteredNodesStatuses, err := g.findNodesThatFit(pluginContext, pod)
 	if err != nil {
 		return result, err
 	}
 
 	// Run "postfilter" plugins.
+	// 5. 运行 postfilter 插件
 	postfilterStatus := g.framework.RunPostFilterPlugins(pluginContext, pod, filteredNodes, filteredNodesStatuses)
 	if !postfilterStatus.IsSuccess() {
 		return result, postfilterStatus.AsError()
 	}
 
+	// 如果过滤后节点个数为 0,则返回错误
 	if len(filteredNodes) == 0 {
 		return result, &FitError{
 			Pod:                   pod,
@@ -236,8 +245,10 @@ func (g *genericScheduler) Schedule(pod *v1.Pod, pluginContext *framework.Plugin
 	metrics.SchedulingLatency.WithLabelValues(metrics.PredicateEvaluation).Observe(metrics.SinceInSeconds(startPredicateEvalTime))
 	metrics.DeprecatedSchedulingLatency.WithLabelValues(metrics.PredicateEvaluation).Observe(metrics.SinceInSeconds(startPredicateEvalTime))
 
+	// 三. predicates 完成,开始 priority 阶段
 	startPriorityEvalTime := time.Now()
 	// When only one node after predicate, just use it.
+	// 如果只有1个节点,则使用它
 	if len(filteredNodes) == 1 {
 		metrics.SchedulingAlgorithmPriorityEvaluationDuration.Observe(metrics.SinceInSeconds(startPriorityEvalTime))
 		metrics.DeprecatedSchedulingAlgorithmPriorityEvaluationDuration.Observe(metrics.SinceInMicroseconds(startPriorityEvalTime))
@@ -259,6 +270,7 @@ func (g *genericScheduler) Schedule(pod *v1.Pod, pluginContext *framework.Plugin
 	metrics.SchedulingLatency.WithLabelValues(metrics.PriorityEvaluation).Observe(metrics.SinceInSeconds(startPriorityEvalTime))
 	metrics.DeprecatedSchedulingLatency.WithLabelValues(metrics.PriorityEvaluation).Observe(metrics.SinceInSeconds(startPriorityEvalTime))
 
+	// 四. 打分完成,筛选出分数最高的节点.最终返回结果
 	host, err := g.selectHost(priorityList)
 	trace.Step("Selecting host done")
 	return ScheduleResult{
@@ -317,6 +329,8 @@ func (g *genericScheduler) selectHost(priorityList schedulerapi.HostPriorityList
 // other pods with the same priority. The nominated pod prevents other pods from
 // using the nominated resources and the nominated pod could take a long time
 // before it is retried after many other pending pods.
+// Trans: Preempt 找到可以被 pod 抢占的 node 节点,从而为 pod 腾出空间进行调度,它选择其中一个节点并抢占该节点上的 pod.它返回如下内容:
+// 1) node 节点 2) 被强占的 pod 列表 3) 其 satus.NominatedNodeName 字段应该被删除的 pod 列表 4) 可能产生的错误
 func (g *genericScheduler) Preempt(pluginContext *framework.PluginContext, pod *v1.Pod, scheduleErr error) (*v1.Node, []*v1.Pod, []*v1.Pod, error) {
 	// Scheduler may return various types of errors. Consider preemption only if
 	// the error is of type FitError.
@@ -489,6 +503,7 @@ func (g *genericScheduler) findNodesThatFit(pluginContext *framework.PluginConte
 		checkNode := func(i int) {
 			nodeName := g.cache.NodeTree().Next()
 
+			// 判断 pod 是否适合运行在该节点上
 			fits, failedPredicates, status, err := g.podFitsOnNode(
 				pluginContext,
 				pod,
@@ -651,6 +666,7 @@ func (g *genericScheduler) podFitsOnNode(
 		} else if !podsAdded || len(failedPredicates) != 0 {
 			break
 		}
+		// 遍历默认的 predicates 算法函数,从 predicateFuncs 对象中取出来,依次执行
 		for _, predicateKey := range predicates.Ordering() {
 			var (
 				fit     bool
@@ -787,6 +803,7 @@ func PrioritizeNodes(
 	}
 
 	// Run the Score plugins.
+	// 依次运行打分器插件,计算分数.并根据插件的权重,汇总结果
 	scoresMap, scoreStatus := framework.RunScorePlugins(pluginContext, pod, nodes)
 	if !scoreStatus.IsSuccess() {
 		return schedulerapi.HostPriorityList{}, scoreStatus.AsError()
@@ -806,6 +823,7 @@ func PrioritizeNodes(
 		}
 	}
 
+	// 最后,如果有 extenders,则依次运行 extenders 对节点进行打分
 	if len(extenders) != 0 && nodes != nil {
 		combinedScores := make(map[string]int, len(nodeNameToInfo))
 		for i := range extenders {

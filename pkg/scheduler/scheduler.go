@@ -212,6 +212,7 @@ func New(client clientset.Interface,
 		Plugins:                        plugins,
 		PluginConfig:                   pluginConfig,
 	})
+	// 配置支持从 Provider,initPolicyFile,initPolicyConfigMap 或 Config 对象中获取
 	var config *factory.Config
 	source := schedulerAlgorithmSource
 	switch {
@@ -338,6 +339,7 @@ func (sched *Scheduler) recordSchedulingFailure(pod *v1.Pod, err error, reason s
 
 // schedule implements the scheduling algorithm and returns the suggested result(host,
 // evaluated nodes number,feasible nodes number).
+// Trans: schedule 调用调度算法的 Schedule 函数,并返回建议的结果
 func (sched *Scheduler) schedule(pod *v1.Pod, pluginContext *framework.PluginContext) (core.ScheduleResult, error) {
 	result, err := sched.Algorithm.Schedule(pod, pluginContext)
 	if err != nil {
@@ -358,20 +360,24 @@ func (sched *Scheduler) preempt(pluginContext *framework.PluginContext, fwk fram
 		return "", err
 	}
 
+	// 1. 尝试抢占
 	node, victims, nominatedPodsToClear, err := sched.Algorithm.Preempt(pluginContext, preemptor, scheduleErr)
 	if err != nil {
 		klog.Errorf("Error preempting victims to make room for %v/%v: %v", preemptor.Namespace, preemptor.Name, err)
 		return "", err
 	}
+	// 2. 如果抢占的节点不为空,则
 	var nodeName = ""
 	if node != nil {
 		nodeName = node.Name
 		// Update the scheduling queue with the nominated pod information. Without
 		// this, there would be a race condition between the next scheduling cycle
 		// and the time the scheduler receives a Pod Update for the nominated pod.
+		// 1. 将一个 pod 添加到给定节点的 nominated pods 中
 		sched.SchedulingQueue.UpdateNominatedPodForNode(preemptor, nodeName)
 
 		// Make a call to update nominated node name of the pod on the API server.
+		// 2. 更新 pod.status.nominatedNodeName 为抢占的 nodename
 		err = sched.PodPreemptor.SetNominatedNodeName(preemptor, nodeName)
 		if err != nil {
 			klog.Errorf("Error in preemption process. Cannot set 'NominatedPod' on pod %v/%v: %v", preemptor.Namespace, preemptor.Name, err)
@@ -379,12 +385,14 @@ func (sched *Scheduler) preempt(pluginContext *framework.PluginContext, fwk fram
 			return "", err
 		}
 
+		// 3. 遍历被驱逐的 pods 列表,依次删除 pod
 		for _, victim := range victims {
 			if err := sched.PodPreemptor.DeletePod(victim); err != nil {
 				klog.Errorf("Error preempting pod %v/%v: %v", victim.Namespace, victim.Name, err)
 				return "", err
 			}
 			// If the victim is a WaitingPod, send a reject message to the PermitPlugin
+			// 如果被驱逐的 pod 是一个 waitingPod,则发送一个拒绝消息给抢占调度插件
 			if waitingPod := fwk.GetWaitingPod(victim.UID); waitingPod != nil {
 				waitingPod.Reject("preempted")
 			}
@@ -398,6 +406,7 @@ func (sched *Scheduler) preempt(pluginContext *framework.PluginContext, fwk fram
 	// but preemption logic does not find any node for it. In that case Preempt()
 	// function of generic_scheduler.go returns the pod itself for removal of
 	// the 'NominatedPod' field.
+	// 3. 遍历 nominatedPodsToClear pod 列表,删除 status.NominatedNodeName 字段
 	for _, p := range nominatedPodsToClear {
 		rErr := sched.PodPreemptor.RemoveNominatedNodeName(p)
 		if rErr != nil {
@@ -515,9 +524,11 @@ func (sched *Scheduler) bind(assumed *v1.Pod, targetNode string, pluginContext *
 }
 
 // scheduleOne does the entire scheduling workflow for a single pod.  It is serialized on the scheduling algorithm's host fitting.
+// Trans: scheduleOne 为一个 pod 完成了完整的调度流程,它会依次执行调度算法,筛选出符合条件的主机.
 func (sched *Scheduler) scheduleOne() {
 	fwk := sched.Framework
 
+	// 1. 从队列中取出 pod 对象
 	pod := sched.NextPod()
 	// pod could be nil when schedulerQueue is closed
 	if pod == nil {
@@ -532,6 +543,7 @@ func (sched *Scheduler) scheduleOne() {
 	klog.V(3).Infof("Attempting to schedule pod: %v/%v", pod.Namespace, pod.Name)
 
 	// Synchronously attempt to find a fit for the pod.
+	// 2. 开始执行调度,挑选出适合 pod 运行的 node
 	start := time.Now()
 	pluginContext := framework.NewPluginContext()
 	scheduleResult, err := sched.schedule(pod, pluginContext)
@@ -545,6 +557,7 @@ func (sched *Scheduler) scheduleOne() {
 				klog.V(3).Infof("Pod priority feature is not enabled or preemption is disabled by scheduler configuration." +
 					" No preemption is performed.")
 			} else {
+				// 3. 如果错误为 FitError,且启用了抢占策略,则尝试抢占
 				preemptionStartTime := time.Now()
 				sched.preempt(pluginContext, fwk, pod, fitError)
 				metrics.PreemptionAttempts.Inc()
@@ -579,6 +592,7 @@ func (sched *Scheduler) scheduleOne() {
 	// Otherwise, binding of volumes is started after the pod is assumed, but before pod binding.
 	//
 	// This function modifies 'assumedPod' if volume binding is required.
+	// 4. 假设指定 volumes
 	allBound, err := sched.assumeVolumes(assumedPod, scheduleResult.SuggestedHost)
 	if err != nil {
 		klog.Errorf("error assuming volumes: %v", err)
@@ -587,6 +601,7 @@ func (sched *Scheduler) scheduleOne() {
 	}
 
 	// Run "reserve" plugins.
+	// 5. 运行 reserve 插件
 	if sts := fwk.RunReservePlugins(pluginContext, assumedPod, scheduleResult.SuggestedHost); !sts.IsSuccess() {
 		sched.recordSchedulingFailure(assumedPod, sts.AsError(), SchedulerError, sts.Message())
 		metrics.PodScheduleErrors.Inc()
@@ -594,6 +609,7 @@ func (sched *Scheduler) scheduleOne() {
 	}
 
 	// assume modifies `assumedPod` by setting NodeName=scheduleResult.SuggestedHost
+	// 6. 假设指定 pod
 	err = sched.assume(assumedPod, scheduleResult.SuggestedHost)
 	if err != nil {
 		klog.Errorf("error assuming pod: %v", err)
@@ -603,8 +619,10 @@ func (sched *Scheduler) scheduleOne() {
 		return
 	}
 	// bind the pod to its host asynchronously (we can do this b/c of the assumption step above).
+	// 7. 将 pod 异步的绑定到 host 上
 	go func() {
 		// Bind volumes first before Pod
+		// 7.1 绑定 Volumes
 		if !allBound {
 			err := sched.bindVolumes(assumedPod)
 			if err != nil {
@@ -617,6 +635,7 @@ func (sched *Scheduler) scheduleOne() {
 		}
 
 		// Run "permit" plugins.
+		// 7.2 运行 permit 插件
 		permitStatus := fwk.RunPermitPlugins(pluginContext, assumedPod, scheduleResult.SuggestedHost)
 		if !permitStatus.IsSuccess() {
 			var reason string
@@ -637,6 +656,7 @@ func (sched *Scheduler) scheduleOne() {
 		}
 
 		// Run "prebind" plugins.
+		// 7.3 运行 prebind 插件
 		preBindStatus := fwk.RunPreBindPlugins(pluginContext, assumedPod, scheduleResult.SuggestedHost)
 		if !preBindStatus.IsSuccess() {
 			var reason string
@@ -656,6 +676,7 @@ func (sched *Scheduler) scheduleOne() {
 			return
 		}
 
+		// 7.4 绑定
 		err := sched.bind(assumedPod, scheduleResult.SuggestedHost, pluginContext)
 		metrics.E2eSchedulingLatency.Observe(metrics.SinceInSeconds(start))
 		metrics.DeprecatedE2eSchedulingLatency.Observe(metrics.SinceInMicroseconds(start))
@@ -663,6 +684,7 @@ func (sched *Scheduler) scheduleOne() {
 			klog.Errorf("error binding pod: %v", err)
 			metrics.PodScheduleErrors.Inc()
 			// trigger un-reserve plugins to clean up state associated with the reserved Pod
+			// 如果出错,则运行 unreserve 插件
 			fwk.RunUnreservePlugins(pluginContext, assumedPod, scheduleResult.SuggestedHost)
 			sched.recordSchedulingFailure(assumedPod, err, SchedulerError, fmt.Sprintf("Binding rejected: %v", err))
 		} else {
@@ -675,6 +697,7 @@ func (sched *Scheduler) scheduleOne() {
 			metrics.PodScheduleSuccesses.Inc()
 
 			// Run "postbind" plugins.
+			// 7.5 运行 PostBindPlugins 插件
 			fwk.RunPostBindPlugins(pluginContext, assumedPod, scheduleResult.SuggestedHost)
 		}
 	}()

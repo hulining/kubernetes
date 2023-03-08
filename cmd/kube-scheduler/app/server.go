@@ -166,6 +166,7 @@ func Run(cc schedulerserverconfig.CompletedConfig, stopCh <-chan struct{}, regis
 	// To help debugging, immediately log version
 	klog.V(1).Infof("Starting Kubernetes Scheduler version %+v", version.Get())
 
+	// 1. 定义默认插件的默认注册表
 	registry := framework.NewRegistry()
 	for _, option := range registryOptions {
 		if err := option(registry); err != nil {
@@ -183,6 +184,7 @@ func Run(cc schedulerserverconfig.CompletedConfig, stopCh <-chan struct{}, regis
 	}
 
 	// Create the scheduler.
+	// 2. 创建 Scheduler 对象
 	sched, err := scheduler.New(cc.Client,
 		cc.InformerFactory.Core().V1().Nodes(),
 		cc.PodInformer,
@@ -211,6 +213,7 @@ func Run(cc schedulerserverconfig.CompletedConfig, stopCh <-chan struct{}, regis
 	}
 
 	// Prepare the event broadcaster.
+	// 3. 启动事件广播器
 	if cc.Broadcaster != nil && cc.EventClient != nil {
 		cc.Broadcaster.StartRecordingToSink(stopCh)
 	}
@@ -224,6 +227,7 @@ func Run(cc schedulerserverconfig.CompletedConfig, stopCh <-chan struct{}, regis
 	}
 
 	// Start up the healthz server.
+	// 4. 启动 server,提供  /healthz,/metrics 等 url 的服务
 	if cc.InsecureServing != nil {
 		separateMetrics := cc.InsecureMetricsServing != nil
 		handler := buildHandlerChain(newHealthzHandler(&cc.ComponentConfig, separateMetrics, checks...), nil, nil)
@@ -247,13 +251,16 @@ func Run(cc schedulerserverconfig.CompletedConfig, stopCh <-chan struct{}, regis
 	}
 
 	// Start all informers.
+	// 5. 启动 informers
 	go cc.PodInformer.Informer().Run(stopCh)
 	cc.InformerFactory.Start(stopCh)
 
 	// Wait for all caches to sync before scheduling.
+	// 6.等待缓存同步
 	cc.InformerFactory.WaitForCacheSync(stopCh)
 
 	// Prepare a reusable runCommand function.
+	// 准备 Scheduler 运行
 	run := func(ctx context.Context) {
 		sched.Run()
 		<-ctx.Done()
@@ -271,6 +278,7 @@ func Run(cc schedulerserverconfig.CompletedConfig, stopCh <-chan struct{}, regis
 	}()
 
 	// If leader election is enabled, runCommand via LeaderElector until done and exit.
+	// 7. 如果启用了 leader 选举, run 则函数通过 LeaderElector 调用,直到完成退出
 	if cc.LeaderElection != nil {
 		cc.LeaderElection.Callbacks = leaderelection.LeaderCallbacks{
 			OnStartedLeading: run,
@@ -289,6 +297,7 @@ func Run(cc schedulerserverconfig.CompletedConfig, stopCh <-chan struct{}, regis
 	}
 
 	// Leader election is disabled, so runCommand inline until done.
+	// 如果没有启用 leader 选举,则直接运行 run 函数,直到退出
 	run(ctx)
 	return fmt.Errorf("finished without leader elect")
 }
