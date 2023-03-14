@@ -214,6 +214,7 @@ func (bfr *BoundedFrequencyRunner) tryRun() {
 
 	if bfr.limiter.TryAccept() {
 		// We're allowed to run the function right now.
+		// 调用构建 BoundedFrequencyRunner 对象时传入的 fn 方法,为 pkg/proxy/ipvs/proxier.go 中 proxier.syncProxyRules 方法
 		bfr.fn()
 		bfr.lastRun = bfr.timer.Now()
 		bfr.timer.Stop()

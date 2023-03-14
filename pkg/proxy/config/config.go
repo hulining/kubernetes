@@ -291,6 +291,7 @@ func NewServiceConfig(serviceInformer coreinformers.ServiceInformer, resyncPerio
 		listerSynced: serviceInformer.Informer().HasSynced,
 	}
 
+	// 使用指定的周期添加事件处理函数
 	serviceInformer.Informer().AddEventHandlerWithResyncPeriod(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc:    result.handleAddService,

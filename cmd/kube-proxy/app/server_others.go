@@ -74,6 +74,7 @@ func newProxyServer(
 		return nil, fmt.Errorf("unable to register configz: %s", err)
 	}
 
+	// 1. 判断是否是 ipv4 的地址
 	protocol := utiliptables.ProtocolIpv4
 	if net.ParseIP(config.BindAddress).To4() == nil {
 		klog.V(0).Infof("IPv6 bind address (%s), assume IPv6 operation", config.BindAddress)
@@ -87,12 +88,14 @@ func newProxyServer(
 	var dbus utildbus.Interface
 
 	// Create a iptables utils.
+	// 2. 创建执行器,用于执行一些 linux 命令,创建 iptables 或 ipvs
 	execer := exec.New()
 
 	dbus = utildbus.New()
 	iptInterface = utiliptables.New(execer, dbus, protocol)
 	kernelHandler = ipvs.NewLinuxKernelHandler()
 	ipsetInterface = utilipset.New(execer)
+	// 3. 判断是否可以使用 ipvs 模式,会尝试加载 ip_vs,ip_vs_rr,ip_vs_wrr,ip_vs_sh,nf_conntrack 内核模块
 	canUseIPVS, _ := ipvs.CanUseIPVSProxier(kernelHandler, ipsetInterface)
 	if canUseIPVS {
 		ipvsInterface = utilipvs.New(execer)
@@ -108,12 +111,14 @@ func newProxyServer(
 		}, nil
 	}
 
+	// 4. 根据配置文件的 ClientConnection 对象创建 k8s 客户端对象
 	client, eventClient, err := createClients(config.ClientConnection, master)
 	if err != nil {
 		return nil, err
 	}
 
 	// Create event recorder
+	// 5. 创建事件记录器
 	hostname, err := utilnode.GetHostname(config.HostnameOverride)
 	if err != nil {
 		return nil, err
@@ -128,6 +133,7 @@ func newProxyServer(
 		Namespace: "",
 	}
 
+	// 6. 创建默认的 healthzServer
 	var healthzServer *healthcheck.HealthzServer
 	var healthzUpdater healthcheck.HealthzUpdater
 	if len(config.HealthzBindAddress) > 0 {
@@ -137,6 +143,7 @@ func newProxyServer(
 
 	var proxier proxy.Provider
 
+	// 7. 获取 kube-proxy 的工作模式
 	proxyMode := getProxyMode(string(config.Mode), kernelHandler, ipsetInterface, iptables.LinuxKernelCompatTester{})
 	nodeIP := net.ParseIP(config.BindAddress)
 	if nodeIP.IsUnspecified() {
@@ -146,6 +153,7 @@ func newProxyServer(
 			nodeIP = net.ParseIP("127.0.0.1")
 		}
 	}
+	// 8. 不同的工作模式,有不同的处理逻辑,重点看下 ipvs 工作模式
 	if proxyMode == proxyModeIPTables {
 		klog.V(0).Info("Using iptables Proxier.")
 		if config.IPTables.MasqueradeBit == nil {
@@ -175,6 +183,7 @@ func newProxyServer(
 		metrics.RegisterMetrics()
 	} else if proxyMode == proxyModeIPVS {
 		klog.V(0).Info("Using ipvs Proxier.")
+		// 8.1 判断是否启用 ipv6.默认没有启用,因此直接创建 Proxier 对象
 		if utilfeature.DefaultFeatureGate.Enabled(features.IPv6DualStack) {
 			klog.V(0).Info("creating dualStackProxier for ipvs.")
 

@@ -211,6 +211,7 @@ func (o *Options) Complete() error {
 	}
 
 	// Load the config file here in Complete, so that Validate validates the fully-resolved config.
+	// 1. 加载配置文件,并添加对配置文件变更的监听器
 	if len(o.ConfigFile) > 0 {
 		c, err := o.loadConfigFromFile(o.ConfigFile)
 		if err != nil {
@@ -223,10 +224,12 @@ func (o *Options) Complete() error {
 		}
 	}
 
+	// 2. 如果指定了 --hostname-override 参数,则不使用主机名而使用此字段作为节点标识
 	if err := o.processHostnameOverrideFlag(); err != nil {
 		return err
 	}
 
+	// 3. 启用 --feature-gates指定的一些特性
 	return utilfeature.DefaultMutableFeatureGate.SetFromMap(o.config.FeatureGates)
 }
 
@@ -289,19 +292,23 @@ func (o *Options) Validate(args []string) error {
 // Run runs the specified ProxyServer.
 func (o *Options) Run() error {
 	defer close(o.errCh)
+	// 1. 如果指定了 --write-config-to 参数,则将默认配置写入到文件后退出
 	if len(o.WriteConfigTo) > 0 {
 		return o.writeConfigFile()
 	}
 
+	// 2. 创建 ProxyServer
 	proxyServer, err := NewProxyServer(o)
 	if err != nil {
 		return err
 	}
 
+	// 3. 如果指定了 --cleanup,则清空 iptables 和 ipvs 规则后退出
 	if o.CleanupAndExit {
 		return proxyServer.CleanupAndExit()
 	}
 
+	// 4. 循环运行
 	o.proxyServer = proxyServer
 	return o.runLoop()
 }
@@ -309,11 +316,13 @@ func (o *Options) Run() error {
 // runLoop will watch on the update change of the proxy server's configuration file.
 // Return an error when updated
 func (o *Options) runLoop() error {
+	// 1. 启动配置文件事件监听
 	if o.watcher != nil {
 		o.watcher.Run()
 	}
 
 	// run the proxy in goroutine
+	// 2. 启动 proxyServer
 	go func() {
 		err := o.proxyServer.Run()
 		o.errCh <- err
@@ -432,6 +441,7 @@ with the apiserver API to configure the proxy.`,
 				klog.Fatalf("failed OS init: %v", err)
 			}
 
+			// 1. 配置&参数的初始化与验证
 			if err := opts.Complete(); err != nil {
 				klog.Fatalf("failed complete: %v", err)
 			}
@@ -439,6 +449,7 @@ with the apiserver API to configure the proxy.`,
 				klog.Fatalf("failed validate: %v", err)
 			}
 
+			// 2. 运行
 			if err := opts.Run(); err != nil {
 				klog.Exit(err)
 			}
@@ -524,11 +535,13 @@ func createClients(config componentbaseconfig.ClientConnectionConfiguration, mas
 
 // Run runs the specified ProxyServer.  This should never exit (unless CleanupAndExit is set).
 // TODO: At the moment, Run() cannot return a nil error, otherwise it's caller will never exit. Update callers of Run to handle nil errors.
+// Trans: Run 运行指定的 ProxyServer,这个函数应该永远不会退出(除非设定了 CleanupAndExit 参数)
 func (s *ProxyServer) Run() error {
 	// To help debugging, immediately log version
 	klog.Infof("Version: %+v", version.Get())
 
 	// TODO(vmarmol): Use container config for this.
+	// 1. 修改 kube-proxy 自身进程的 oom-score-adj 值(/proc/self/oom_score_adj)
 	var oomAdjuster *oom.OOMAdjuster
 	if s.OOMScoreAdj != nil {
 		oomAdjuster = oom.NewOOMAdjuster()
@@ -542,11 +555,13 @@ func (s *ProxyServer) Run() error {
 	}
 
 	// Start up a healthz server if requested
+	// 2. 启动用于健康检查的服务
 	if s.HealthzServer != nil {
 		s.HealthzServer.Run()
 	}
 
 	// Start up a metrics server if requested
+	// 3. 启动 metrics server
 	if len(s.MetricsBindAddress) > 0 {
 		proxyMux := mux.NewPathRecorderMux("kube-proxy")
 		healthz.InstallHandler(proxyMux)
@@ -568,6 +583,7 @@ func (s *ProxyServer) Run() error {
 
 	// Tune conntrack, if requested
 	// Conntracker is always nil for windows
+	// 4. 配置连接追踪相关配置
 	if s.Conntracker != nil {
 		max, err := getConntrackMax(s.ConntrackConfiguration)
 		if err != nil {
@@ -629,6 +645,7 @@ func (s *ProxyServer) Run() error {
 	// Note: RegisterHandler() calls need to happen before creation of Sources because sources
 	// only notify on changes, and the initial update (on process start) may be lost if no handlers
 	// are registered yet.
+	// 5. 创建相关配置,注册相关事件处理器,并运行.最终会调用 proxier.OnServiceSynced() 方法来 syncProxyRules,实现对 ipvs 规则的操作
 	serviceConfig := config.NewServiceConfig(informerFactory.Core().V1().Services(), s.ConfigSyncPeriod)
 	serviceConfig.RegisterEventHandler(s.Proxier)
 	go serviceConfig.Run(wait.NeverStop)
@@ -651,6 +668,7 @@ func (s *ProxyServer) Run() error {
 	s.birthCry()
 
 	// Just loop forever for now...
+	// 6. 开启循环,处理 service 相关资源的变更事件
 	s.Proxier.SyncLoop()
 	return nil
 }

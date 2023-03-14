@@ -669,6 +669,7 @@ func (proxier *Proxier) appendServiceCommentLocked(args []string, svcName string
 // This is where all of the iptables-save/restore calls happen.
 // The only other iptables rules are those that are setup in iptablesInit()
 // This assumes proxier.mu is NOT held
+// iptables 工作模式下 Proxier 工作的核心函数,会回 iptables 规则做出变更
 func (proxier *Proxier) syncProxyRules() {
 	proxier.mu.Lock()
 	defer proxier.mu.Unlock()
