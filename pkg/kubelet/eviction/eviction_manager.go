@@ -191,6 +191,7 @@ func (m *managerImpl) Start(diskInfoProvider DiskInfoProvider, podFunc ActivePod
 	// start the eviction manager monitoring
 	go func() {
 		for {
+			// 驱逐 pod,并等待资源回收
 			if evictedPods := m.synchronize(diskInfoProvider, podFunc); evictedPods != nil {
 				klog.Infof("eviction manager: pods %s evicted, waiting for pod to be cleaned up", format.Pods(evictedPods))
 				m.waitForPodsCleanup(podCleanedUpFunc, evictedPods)
@@ -224,6 +225,7 @@ func (m *managerImpl) IsUnderPIDPressure() bool {
 
 // synchronize is the main control loop that enforces eviction thresholds.
 // Returns the pod that was killed, or nil if no pod was killed.
+// Trans: synchronize 是执行驱逐 thresholds 的主要控制循环,返回被强制驱逐的 pod 列表
 func (m *managerImpl) synchronize(diskInfoProvider DiskInfoProvider, podFunc ActivePodsFunc) []*v1.Pod {
 	// if we have nothing to do, just return
 	thresholds := m.config.Thresholds
@@ -373,6 +375,7 @@ func (m *managerImpl) synchronize(diskInfoProvider DiskInfoProvider, podFunc Act
 	}
 
 	// we kill at most a single pod during each eviction interval
+	// 驱逐 pod
 	for i := range activePods {
 		pod := activePods[i]
 		gracePeriodOverride := int64(0)

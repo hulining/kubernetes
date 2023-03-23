@@ -90,8 +90,14 @@ func (m *kubeGenericRuntimeManager) recordContainerEvent(pod *v1.Pod, container 
 // * create the container
 // * start the container
 // * run the post start lifecycle hooks (if applicable)
+// Trans: startContainer 通过如下步骤启动容器
+// - 拉取镜像
+// - 创建容器
+// - 启动容器
+// - 运行启动后钩子函数
 func (m *kubeGenericRuntimeManager) startContainer(podSandboxID string, podSandboxConfig *runtimeapi.PodSandboxConfig, container *v1.Container, pod *v1.Pod, podStatus *kubecontainer.PodStatus, pullSecrets []v1.Secret, podIP string) (string, error) {
 	// Step 1: pull the image.
+	// 1. 通过传入的 pullSecrets 拉取镜像
 	imageRef, msg, err := m.imagePuller.EnsureImageExists(pod, container, pullSecrets, podSandboxConfig)
 	if err != nil {
 		s, _ := grpcstatus.FromError(err)
@@ -100,6 +106,7 @@ func (m *kubeGenericRuntimeManager) startContainer(podSandboxID string, podSandb
 	}
 
 	// Step 2: create the container.
+	// 2. 创建容器,并建立与 pod 的映射关系
 	ref, err := kubecontainer.GenerateContainerRef(pod, container)
 	if err != nil {
 		klog.Errorf("Can't make a ref to pod %q, container %v: %v", format.Pod(pod), container.Name, err)
@@ -145,6 +152,7 @@ func (m *kubeGenericRuntimeManager) startContainer(podSandboxID string, podSandb
 	}
 
 	// Step 3: start the container.
+	// 3. 启动容器,常见必要的日志链接目录
 	err = m.runtimeService.StartContainer(containerID)
 	if err != nil {
 		s, _ := grpcstatus.FromError(err)
@@ -173,6 +181,7 @@ func (m *kubeGenericRuntimeManager) startContainer(podSandboxID string, podSandb
 	}
 
 	// Step 4: execute the post start hook.
+	// 4. 执行容器 post start 钩子函数
 	if container.Lifecycle != nil && container.Lifecycle.PostStart != nil {
 		kubeContainerID := kubecontainer.ContainerID{
 			Type: m.runtimeName,
@@ -535,6 +544,7 @@ func (m *kubeGenericRuntimeManager) restoreSpecsFromContainerLabels(containerID 
 // killContainer kills a container through the following steps:
 // * Run the pre-stop lifecycle hooks (if applicable).
 // * Stop the container.
+// Trans: killContainer 通过如下步骤停止容器: 1. 运行 pre-stop 生命周期钩子函数 2. 停止容器
 func (m *kubeGenericRuntimeManager) killContainer(pod *v1.Pod, containerID kubecontainer.ContainerID, containerName string, message string, gracePeriodOverride *int64) error {
 	var containerSpec *v1.Container
 	if pod != nil {
@@ -566,6 +576,7 @@ func (m *kubeGenericRuntimeManager) killContainer(pod *v1.Pod, containerID kubec
 	m.recordContainerEvent(pod, containerSpec, containerID.ID, v1.EventTypeNormal, events.KillingContainer, message)
 
 	// Run internal pre-stop lifecycle hook
+	// 1. 运行停止前的 prestop 生命周期钩子函数
 	if err := m.internalLifecycle.PreStopContainer(containerID.ID); err != nil {
 		return err
 	}
@@ -585,6 +596,7 @@ func (m *kubeGenericRuntimeManager) killContainer(pod *v1.Pod, containerID kubec
 
 	klog.V(2).Infof("Killing container %q with %d second grace period", containerID.String(), gracePeriod)
 
+	// 2. 在 gracePeriod 后优雅的停止 container.
 	err := m.runtimeService.StopContainer(containerID.ID, gracePeriod)
 	if err != nil {
 		klog.Errorf("Container %q termination failed with gracePeriod %d: %v", containerID.String(), gracePeriod, err)
@@ -592,6 +604,7 @@ func (m *kubeGenericRuntimeManager) killContainer(pod *v1.Pod, containerID kubec
 		klog.V(3).Infof("Container %q exited normally", containerID.String())
 	}
 
+	// 3. 清理 container 关系
 	m.containerRefManager.ClearRef(containerID)
 
 	return err
@@ -602,6 +615,7 @@ func (m *kubeGenericRuntimeManager) killContainersWithSyncResult(pod *v1.Pod, ru
 	containerResults := make(chan *kubecontainer.SyncResult, len(runningPod.Containers))
 	wg := sync.WaitGroup{}
 
+	// 遍历正在运行的 container,异步停止 container
 	wg.Add(len(runningPod.Containers))
 	for _, container := range runningPod.Containers {
 		go func(container *kubecontainer.Container) {
@@ -671,6 +685,7 @@ func (m *kubeGenericRuntimeManager) pruneInitContainersBeforeStart(pod *v1.Pod, 
 // Remove all init containres. Note that this function does not check the state
 // of the container because it assumes all init containers have been stopped
 // before the call happens.
+// Trans: 删除所有 init containres.
 func (m *kubeGenericRuntimeManager) purgeInitContainers(pod *v1.Pod, podStatus *kubecontainer.PodStatus) {
 	initContainerNames := sets.NewString()
 	for _, container := range pod.Spec.InitContainers {
@@ -684,12 +699,14 @@ func (m *kubeGenericRuntimeManager) purgeInitContainers(pod *v1.Pod, podStatus *
 			}
 			count++
 			// Purge all init containers that match this container name
+			// 删除所有 init 容器
 			klog.V(4).Infof("Removing init container %q instance %q %d", status.Name, status.ID.ID, count)
 			if err := m.removeContainer(status.ID.ID); err != nil {
 				utilruntime.HandleError(fmt.Errorf("failed to remove pod init container %q: %v; Skipping pod %q", status.Name, err, format.Pod(pod)))
 				continue
 			}
 			// Remove any references to this container
+			// 删除该容器的映射关系
 			if _, ok := m.containerRefManager.GetRef(status.ID); ok {
 				m.containerRefManager.ClearRef(status.ID)
 			} else {

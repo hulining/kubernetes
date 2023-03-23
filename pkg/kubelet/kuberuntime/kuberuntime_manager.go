@@ -404,6 +404,10 @@ type podActions struct {
 
 // podSandboxChanged checks whether the spec of the pod is changed and returns
 // (changed, new attempt, original sandboxID if exist).
+// Trans: podSandboxChanged 检测 pod 的 spec 是不是已经变化了.以下场景会发生变化
+// - 就绪状态的 sandbox 数量不为 1
+// - network namespace 发生变化时
+// - sandbox 没有 IP 地址时
 func (m *kubeGenericRuntimeManager) podSandboxChanged(pod *v1.Pod, podStatus *kubecontainer.PodStatus) (bool, uint32, string) {
 	if len(podStatus.SandboxStatuses) == 0 {
 		klog.V(2).Infof("No sandbox for pod %q can be found. Need to start a new one", format.Pod(pod))
@@ -464,6 +468,7 @@ func containerSucceeded(c *v1.Container, podStatus *kubecontainer.PodStatus) boo
 func (m *kubeGenericRuntimeManager) computePodActions(pod *v1.Pod, podStatus *kubecontainer.PodStatus) podActions {
 	klog.V(5).Infof("Syncing Pod %q: %+v", format.Pod(pod), pod)
 
+	// 1. 判断 sandbox 是否已经发生变化了,如果发生变化了,则需要重新创建 sandbox
 	createPodSandbox, attempt, sandboxID := m.podSandboxChanged(pod, podStatus)
 	changes := podActions{
 		KillPod:           createPodSandbox,
@@ -476,7 +481,9 @@ func (m *kubeGenericRuntimeManager) computePodActions(pod *v1.Pod, podStatus *ku
 
 	// If we need to (re-)create the pod sandbox, everything will need to be
 	// killed and recreated, and init containers should be purged.
+	// 2. 如果需要创建,则
 	if createPodSandbox {
+		// 2.1 当 RestartPolicy 配置为 Never 时,不创建 sandbox
 		if !shouldRestartOnFailure(pod) && attempt != 0 && len(podStatus.ContainerStatuses) != 0 {
 			// Should not restart the pod, just return.
 			// we should not create a sandbox for a pod if it is already done.
@@ -489,6 +496,7 @@ func (m *kubeGenericRuntimeManager) computePodActions(pod *v1.Pod, podStatus *ku
 			changes.CreateSandbox = false
 			return changes
 		}
+		// 2.2 否则,当配置了 initContainers 相关参数时, NextInitContainerToStart 为第一个 InitContainer
 		if len(pod.Spec.InitContainers) != 0 {
 			// Pod has init containers, return the first one.
 			changes.NextInitContainerToStart = &pod.Spec.InitContainers[0]
@@ -496,6 +504,7 @@ func (m *kubeGenericRuntimeManager) computePodActions(pod *v1.Pod, podStatus *ku
 		}
 		// Start all containers by default but exclude the ones that succeeded if
 		// RestartPolicy is OnFailure.
+		// 2.3 默认情况下启动所有容器,但是排除 "执行成功" 且 RestartPolicy 为 OnFailure 的容器
 		for idx, c := range pod.Spec.Containers {
 			if containerSucceeded(&c, podStatus) && pod.Spec.RestartPolicy == v1.RestartPolicyOnFailure {
 				continue
@@ -542,15 +551,18 @@ func (m *kubeGenericRuntimeManager) computePodActions(pod *v1.Pod, podStatus *ku
 		return changes
 	}
 
+	// 3. 遍历 pod.spec 中的 containers,看是否为期望的状态
 	// Number of running containers to keep.
 	keepCount := 0
 	// check the status of containers.
 	for idx, container := range pod.Spec.Containers {
+		// 3.1 获取 container 的当前状态
 		containerStatus := podStatus.FindContainerStatusByName(container.Name)
 
 		// Call internal container post-stop lifecycle hook for any non-running container so that any
 		// allocated cpus are released immediately. If the container is restarted, cpus will be re-allocated
 		// to it.
+		// 3.2 如果容器没有在运行,则尝试执行 PostStopContainer 函数
 		if containerStatus != nil && containerStatus.State != kubecontainer.ContainerStateRunning {
 			if err := m.internalLifecycle.PostStopContainer(containerStatus.ID.ID); err != nil {
 				klog.Errorf("internal container post-stop lifecycle hook failed for container %v in pod %v with error %v",
@@ -560,6 +572,8 @@ func (m *kubeGenericRuntimeManager) computePodActions(pod *v1.Pod, podStatus *ku
 
 		// If container does not exist, or is not running, check whether we
 		// need to restart it.
+		// 3.3 如果没有找到容器状态或容器状态不为 running,且容器应该被重启,则将索引加入待重启的容器列表中
+		//     如果没有找到容器状态或容器为 unknown,则容器信息会被添加到 待杀死的容器字典中
 		if containerStatus == nil || containerStatus.State != kubecontainer.ContainerStateRunning {
 			if kubecontainer.ShouldContainerBeRestarted(&container, pod, podStatus) {
 				message := fmt.Sprintf("Container %+v is dead, but RestartPolicy says that we should restart it.", container)
@@ -580,6 +594,8 @@ func (m *kubeGenericRuntimeManager) computePodActions(pod *v1.Pod, podStatus *ku
 			continue
 		}
 		// The container is running, but kill the container if any of the following condition is met.
+		// 3.4 容器 hash 值与预期值不一致,则 restart,并将其加入到待重启列表中,容器相关信息加入待杀死的的容器字典中
+		//  否则,判断容器是否处于 Failure 状态.如果是,则修改错误信息.否则,保留容器个数自增
 		var message string
 		restart := shouldRestartOnFailure(pod)
 		if _, _, changed := containerChanged(&container, containerStatus); changed {
@@ -604,6 +620,7 @@ func (m *kubeGenericRuntimeManager) computePodActions(pod *v1.Pod, podStatus *ku
 			changes.ContainersToStart = append(changes.ContainersToStart, idx)
 		}
 
+		// 容器相关信息加入待杀死的的容器字典中
 		changes.ContainersToKill[containerStatus.ID] = containerToKillInfo{
 			name:      containerStatus.Name,
 			container: &pod.Spec.Containers[idx],
@@ -628,8 +645,10 @@ func (m *kubeGenericRuntimeManager) computePodActions(pod *v1.Pod, podStatus *ku
 //  5. Create ephemeral containers.
 //  6. Create init containers.
 //  7. Create normal containers.
+// Trans: SyncPod 同步正在运行的 pod 来达到期望的状态
 func (m *kubeGenericRuntimeManager) SyncPod(pod *v1.Pod, podStatus *kubecontainer.PodStatus, pullSecrets []v1.Secret, backOff *flowcontrol.Backoff) (result kubecontainer.PodSyncResult) {
 	// Step 1: Compute sandbox and container changes.
+	// 1. 计算 pod 的变化
 	podContainerChanges := m.computePodActions(pod, podStatus)
 	klog.V(3).Infof("computePodActions got %+v for pod %q", podContainerChanges, format.Pod(pod))
 	if podContainerChanges.CreateSandbox {
@@ -645,6 +664,7 @@ func (m *kubeGenericRuntimeManager) SyncPod(pod *v1.Pod, podStatus *kubecontaine
 	}
 
 	// Step 2: Kill the pod if the sandbox has changed.
+	// 2. 如果 KillPod 为 true,此时不需要保留容器且待启动的容器为0,则杀死 pod.
 	if podContainerChanges.KillPod {
 		if podContainerChanges.CreateSandbox {
 			klog.V(4).Infof("Stopping PodSandbox for %q, will start new one", format.Pod(pod))
@@ -652,6 +672,7 @@ func (m *kubeGenericRuntimeManager) SyncPod(pod *v1.Pod, podStatus *kubecontaine
 			klog.V(4).Infof("Stopping PodSandbox for %q because all other containers are dead.", format.Pod(pod))
 		}
 
+		// 2.1 停止 pod
 		killResult := m.killPodWithSyncResult(pod, kubecontainer.ConvertPodStatusToRunningPod(m.runtimeName, podStatus), nil)
 		result.AddPodSyncResult(killResult)
 		if killResult.Error() != nil {
@@ -659,11 +680,13 @@ func (m *kubeGenericRuntimeManager) SyncPod(pod *v1.Pod, podStatus *kubecontaine
 			return
 		}
 
+		// 2.2 如果需要重建的话,则删除所有 init 容器
 		if podContainerChanges.CreateSandbox {
 			m.purgeInitContainers(pod, podStatus)
 		}
 	} else {
 		// Step 3: kill any running containers in this pod which are not to keep.
+		// 3. 否则,杀死所有待杀死的容器
 		for containerID, containerInfo := range podContainerChanges.ContainersToKill {
 			klog.V(3).Infof("Killing unwanted container %q(id=%q) for pod %q", containerInfo.name, containerID, format.Pod(pod))
 			killContainerResult := kubecontainer.NewSyncResult(kubecontainer.KillContainer, containerInfo.name)
@@ -679,6 +702,7 @@ func (m *kubeGenericRuntimeManager) SyncPod(pod *v1.Pod, podStatus *kubecontaine
 	// Keep terminated init containers fairly aggressively controlled
 	// This is an optimization because container removals are typically handled
 	// by container garbage collector.
+	// 在启动容器之前删除一些 init 容器
 	m.pruneInitContainersBeforeStart(pod, podStatus)
 
 	// We pass the value of the PRIMARY podIP down to generatePodSandboxConfig and
@@ -696,6 +720,7 @@ func (m *kubeGenericRuntimeManager) SyncPod(pod *v1.Pod, podStatus *kubecontaine
 	}
 
 	// Step 4: Create a sandbox for the pod if necessary.
+	// 4. 如果 CreateSandbox 为 true,则创建 sandbox
 	podSandboxID := podContainerChanges.SandboxID
 	if podContainerChanges.CreateSandbox {
 		var msg string
@@ -760,6 +785,7 @@ func (m *kubeGenericRuntimeManager) SyncPod(pod *v1.Pod, podStatus *kubecontaine
 	// Helper containing boilerplate common to starting all types of containers.
 	// typeName is a label used to describe this type of container in log messages,
 	// currently: "container", "init container" or "ephemeral container"
+	// !!! 定义函数,用于创建&启动容器,并运行容器启动后的钩子函数.该函数中包含一些重试机制
 	start := func(typeName string, container *v1.Container) error {
 		startContainerResult := kubecontainer.NewSyncResult(kubecontainer.StartContainer, container.Name)
 		result.AddSyncResult(startContainerResult)
@@ -792,6 +818,7 @@ func (m *kubeGenericRuntimeManager) SyncPod(pod *v1.Pod, podStatus *kubecontaine
 	// These are started "prior" to init containers to allow running ephemeral containers even when there
 	// are errors starting an init container. In practice init containers will start first since ephemeral
 	// containers cannot be specified on pod creation.
+	// 5. 如果启用了 EphemeralContainers 特性,则启动 ephemeral container
 	if utilfeature.DefaultFeatureGate.Enabled(features.EphemeralContainers) {
 		for _, idx := range podContainerChanges.EphemeralContainersToStart {
 			c := (*v1.Container)(&pod.Spec.EphemeralContainers[idx].EphemeralContainerCommon)
@@ -800,6 +827,7 @@ func (m *kubeGenericRuntimeManager) SyncPod(pod *v1.Pod, podStatus *kubecontaine
 	}
 
 	// Step 6: start the init container.
+	// 6. 启动 init 容器
 	if container := podContainerChanges.NextInitContainerToStart; container != nil {
 		// Start the next init container.
 		if err := start("init container", container); err != nil {
@@ -811,6 +839,7 @@ func (m *kubeGenericRuntimeManager) SyncPod(pod *v1.Pod, podStatus *kubecontaine
 	}
 
 	// Step 7: start containers in podContainerChanges.ContainersToStart.
+	// 7 启动应用容器
 	for _, idx := range podContainerChanges.ContainersToStart {
 		start("container", &pod.Spec.Containers[idx])
 	}
@@ -862,6 +891,7 @@ func (m *kubeGenericRuntimeManager) KillPod(pod *v1.Pod, runningPod kubecontaine
 
 // killPodWithSyncResult kills a runningPod and returns SyncResult.
 // Note: The pod passed in could be *nil* when kubelet restarted.
+// killPodWithSyncResult 停止 正在运行的 pod,并返回 PodSyncResult
 func (m *kubeGenericRuntimeManager) killPodWithSyncResult(pod *v1.Pod, runningPod kubecontainer.Pod, gracePeriodOverride *int64) (result kubecontainer.PodSyncResult) {
 	killContainerResults := m.killContainersWithSyncResult(pod, runningPod, gracePeriodOverride)
 	for _, containerResult := range killContainerResults {

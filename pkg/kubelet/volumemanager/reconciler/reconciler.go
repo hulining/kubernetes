@@ -165,6 +165,8 @@ func (rc *reconciler) reconcile() {
 	// pod.
 
 	// Ensure volumes that should be unmounted are unmounted.
+	// Trans: 确保本不应该被挂载的 volumes 处于没有被挂载的状态
+	// 遍历已经被挂载的 volume,如果没在期望被挂载的 volume 列表中,则卸载它
 	for _, mountedVolume := range rc.actualStateOfWorld.GetMountedVolumes() {
 		if !rc.desiredStateOfWorld.PodExistsInVolume(mountedVolume.PodName, mountedVolume.VolumeName) {
 			// Volume is mounted, unmount it
@@ -185,6 +187,7 @@ func (rc *reconciler) reconcile() {
 	}
 
 	// Ensure volumes that should be attached/mounted are attached/mounted.
+	// Trans: 确保本应该被挂载的 volumes 处于被挂载状态
 	for _, volumeToMount := range rc.desiredStateOfWorld.GetVolumesToMount() {
 		volMounted, devicePath, err := rc.actualStateOfWorld.PodExistsInVolume(volumeToMount.PodName, volumeToMount.VolumeName)
 		volumeToMount.DevicePath = devicePath

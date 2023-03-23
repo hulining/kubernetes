@@ -50,6 +50,7 @@ import (
 // registerWithAPIServer registers the node with the cluster master. It is safe
 // to call multiple times, but not concurrently (kl.registrationCompleted is
 // not locked).
+// Trans: registerWithAPIServer 将节点信息注册到 apiserver
 func (kl *Kubelet) registerWithAPIServer() {
 	if kl.registrationCompleted {
 		return
@@ -63,12 +64,14 @@ func (kl *Kubelet) registerWithAPIServer() {
 			step = 7 * time.Second
 		}
 
+		// 1. 生成节点对象
 		node, err := kl.initialNode()
 		if err != nil {
 			klog.Errorf("Unable to construct v1.Node object for kubelet: %v", err)
 			continue
 		}
 
+		// 2. 将节点对象注册到 apiserver.如果没有则创建,如果已经有了,则提交 patch
 		klog.Infof("Attempting to register node %s", node.Name)
 		registered := kl.tryRegisterWithAPIServer(node)
 		if registered {

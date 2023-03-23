@@ -819,6 +819,7 @@ func (kl *Kubelet) killPod(pod *v1.Pod, runningPod *kubecontainer.Pod, status *k
 	}
 
 	// Call the container runtime KillPod method which stops all running containers of the pod
+	// 调用容器运行时的 KillPod 方法停止 pod 正在运行的容器
 	if err := kl.containerRuntime.KillPod(pod, p, gracePeriodOverride); err != nil {
 		return err
 	}
@@ -902,6 +903,7 @@ func (kl *Kubelet) IsPodDeleted(uid types.UID) bool {
 
 // PodResourcesAreReclaimed returns true if all required node-level resources that a pod was consuming have
 // been reclaimed by the kubelet.  Reclaiming resources is a prerequisite to deleting a pod from the API server.
+// Trans: 如果 pod 所消耗的所有节点级资源都已被 kubelet 回收，则返回 true
 func (kl *Kubelet) PodResourcesAreReclaimed(pod *v1.Pod, status v1.PodStatus) bool {
 	if !notRunning(status.ContainerStatuses) {
 		// We shouldnt delete pods that still have running containers
@@ -1092,6 +1094,7 @@ func (kl *Kubelet) podKiller() {
 
 		if !exists {
 			go func(apiPod *v1.Pod, runningPod *kubecontainer.Pod) {
+				// 停止 pod
 				klog.V(2).Infof("Killing unwanted pod %q", runningPod.Name)
 				err := kl.killPod(apiPod, runningPod, nil, nil)
 				if err != nil {

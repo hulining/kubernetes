@@ -60,6 +60,7 @@ type RuntimeHelper interface {
 
 // ShouldContainerBeRestarted checks whether a container needs to be restarted.
 // TODO(yifan): Think about how to refactor this.
+// Trans: ShouldContainerBeRestarted 判断容器是否应该被重启
 func ShouldContainerBeRestarted(container *v1.Container, pod *v1.Pod, podStatus *PodStatus) bool {
 	// Get latest container status.
 	status := podStatus.FindContainerStatusByName(container.Name)

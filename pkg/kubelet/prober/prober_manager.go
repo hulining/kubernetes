@@ -121,6 +121,7 @@ func NewManager(
 
 // Start syncing probe status. This should only be called once.
 func (m *manager) Start() {
+	// 启动 goroutine,使用 redisness 及 startup 来更新缓存中容器状态
 	// Start syncing readiness.
 	go wait.Forever(m.updateReadiness, 0)
 	// Start syncing startup.

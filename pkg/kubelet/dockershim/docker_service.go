@@ -193,6 +193,7 @@ func NewDockerClientFromConfig(config *ClientConfig) libdocker.Interface {
 func NewDockerService(config *ClientConfig, podSandboxImage string, streamingConfig *streaming.Config, pluginSettings *NetworkPluginSettings,
 	cgroupsName string, kubeCgroupDriver string, dockershimRootDir string, startLocalStreamingServer bool) (DockerService, error) {
 
+	// 创建 dockerEngine 的客户端对象,封装到 ds 中,
 	client := NewDockerClientFromConfig(config)
 
 	c := libdocker.NewInstrumentedInterface(client)

@@ -254,6 +254,7 @@ func (m *manager) Start() {
 	klog.V(2).Infof("Certificate rotation is enabled.")
 
 	templateChanged := make(chan struct{})
+	// 当前时间到达 deadline 或 templateChanged,则触发证书滚动更新
 	go wait.Until(func() {
 		deadline := m.nextRotationDeadline()
 		if sleepInterval := deadline.Sub(time.Now()); sleepInterval > 0 {
@@ -377,9 +378,11 @@ func (m *manager) RotateCerts() (bool, error) {
 // This method also keeps track of "server health" by interpreting the responses it gets
 // from the server on the various calls it makes.
 // TODO: return errors, have callers handle and log them correctly
+// 滚动证书
 func (m *manager) rotateCerts() (bool, error) {
 	klog.V(2).Infof("Rotating certificates")
 
+	// 1. 生成证书签署请求
 	template, csrPEM, keyPEM, privateKey, err := m.generateCSR()
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("Unable to generate a certificate signing request: %v", err))
@@ -387,6 +390,7 @@ func (m *manager) rotateCerts() (bool, error) {
 	}
 
 	// request the client each time
+	// 2. 获取客户端
 	client, err := m.getClient()
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("Unable to load a client to request certificates: %v", err))
@@ -395,6 +399,7 @@ func (m *manager) rotateCerts() (bool, error) {
 
 	// Call the Certificate Signing Request API to get a certificate for the
 	// new private key.
+	// 3. 调用证书签名请求API以获取新私钥的证书
 	req, err := csr.RequestCertificate(client, csrPEM, "", m.usages, privateKey)
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("Failed while requesting a signed certificate from the master: %v", err))
@@ -409,12 +414,14 @@ func (m *manager) rotateCerts() (bool, error) {
 
 	// Wait for the certificate to be signed. This interface and internal timout
 	// is a remainder after the old design using raw watch wrapped with backoff.
+	// 4. 等待证书被签署
 	crtPEM, err := csr.WaitForCertificate(ctx, client, req)
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("certificate request was not signed: %v", err))
 		return false, nil
 	}
 
+	// 5. 更新证书
 	cert, err := m.certStore.Update(crtPEM, keyPEM)
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("Unable to store the new cert/key pair: %v", err))
@@ -486,6 +493,7 @@ func (m *manager) certSatisfiesTemplate() bool {
 // nextRotationDeadline returns a value for the threshold at which the
 // current certificate should be rotated, 80%+/-10% of the expiration of the
 // certificate.
+// Trans: nextRotationDeadline 返回当前证书需要更新的时间
 func (m *manager) nextRotationDeadline() time.Time {
 	// forceRotation is not protected by locks
 	if m.forceRotation {

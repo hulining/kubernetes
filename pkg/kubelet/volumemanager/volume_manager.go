@@ -243,9 +243,12 @@ type volumeManager struct {
 func (vm *volumeManager) Run(sourcesReady config.SourcesReady, stopCh <-chan struct{}) {
 	defer runtime.HandleCrash()
 
+	// 1. 启动 desiredStateOfWorldPopulator.它会定期遍历 pod 列表,并确保每个 pod 都达到了 world 缓存的所需状态.
+	//  它还验证 world 缓存中处于所需状态的 pod 是否仍然存在,如果不存在,则从缓存中删除
 	go vm.desiredStateOfWorldPopulator.Run(sourcesReady, stopCh)
 	klog.V(2).Infof("The desired_state_of_world populator starts")
 
+	// 2. 启动 kubelet volume manager,调谐 volume 达到预期的状态
 	klog.Infof("Starting Kubelet Volume Manager")
 	go vm.reconciler.Run(stopCh)
 

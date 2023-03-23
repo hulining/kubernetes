@@ -90,6 +90,7 @@ func (c *controller) Run(stopCh <-chan struct{}) {
 }
 
 func (c *controller) sync() {
+	// 1. 如果节点的 latestLease 存在,则创建 lease 对象并更新
 	if c.latestLease != nil {
 		// As long as node lease is not (or very rarely) updated by any other agent than Kubelet,
 		// we can optimistically assume it didn't change since our last update and try updating
@@ -105,6 +106,7 @@ func (c *controller) sync() {
 		klog.Infof("failed to update lease using latest lease, fallback to ensure lease, err: %v", err)
 	}
 
+	// 2. 否则,获取或创建一个 lease
 	lease, created := c.backoffEnsureLease()
 	c.latestLease = lease
 	// we don't need to update the lease if we just created it
@@ -141,6 +143,7 @@ func (c *controller) backoffEnsureLease() (*coordinationv1.Lease, bool) {
 
 // ensureLease creates the lease if it does not exist. Returns the lease and
 // a bool (true if this call created the lease), or any error that occurs.
+// 尝试使用 restful api 获取 lease 并返回.如果 lease 不存在,则创建一个新的 lease 并返回.同时返回是否创建新的 lease
 func (c *controller) ensureLease() (*coordinationv1.Lease, bool, error) {
 	lease, err := c.leaseClient.Get(c.holderIdentity, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {

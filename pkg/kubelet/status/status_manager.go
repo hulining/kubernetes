@@ -153,6 +153,7 @@ func (m *manager) Start() {
 		return
 	}
 
+	// 同步 pod 的状态
 	klog.Info("Starting to sync pod status with apiserver")
 	//lint:ignore SA1015 Ticker can link since this is only called once and doesn't handle termination.
 	syncTicker := time.Tick(syncPeriod)
@@ -160,10 +161,12 @@ func (m *manager) Start() {
 	go wait.Forever(func() {
 		select {
 		case syncRequest := <-m.podStatusChannel:
+			// 状态管理器同步 pod 的状态到 apiserver
 			klog.V(5).Infof("Status Manager: syncing pod: %q, with status: (%d, %v) from podStatusChannel",
 				syncRequest.podUID, syncRequest.status.version, syncRequest.status.status)
 			m.syncPod(syncRequest.podUID, syncRequest.status)
 		case <-syncTicker:
+			// 批量同步缓存需要同步的 pod 状态
 			m.syncBatch()
 		}
 	}, 0)
@@ -518,6 +521,7 @@ func (m *manager) syncPod(uid types.UID, status versionedPodStatus) {
 	}
 
 	// TODO: make me easier to express from client code
+	// 1. 获取 apiserver 中的 pod 对象
 	pod, err := m.kubeClient.CoreV1().Pods(status.podNamespace).Get(status.podName, metav1.GetOptions{})
 	if errors.IsNotFound(err) {
 		klog.V(3).Infof("Pod %q (%s) does not exist on the server", status.podName, uid)
@@ -538,6 +542,7 @@ func (m *manager) syncPod(uid types.UID, status versionedPodStatus) {
 		return
 	}
 
+	// 2. 根据旧状态与 pod 的现实状态.生成更新后的 pod 对象.同时在 apiserver 更新 pod 对象的状态
 	oldStatus := pod.Status.DeepCopy()
 	newPod, patchBytes, err := statusutil.PatchPodStatus(m.kubeClient, pod.Namespace, pod.Name, pod.UID, *oldStatus, mergePodStatus(*oldStatus, status.status))
 	klog.V(3).Infof("Patch status for pod %q with %q", format.Pod(pod), patchBytes)
@@ -551,6 +556,7 @@ func (m *manager) syncPod(uid types.UID, status versionedPodStatus) {
 	m.apiStatusVersions[kubetypes.MirrorPodUID(pod.UID)] = status.version
 
 	// We don't handle graceful deletion of mirror pods.
+	// 3. 如果 pod 的资源都被回收了,则表示该 pod 可以被删除,并在 apiserver 中删除 pod
 	if m.canBeDeleted(pod, status.status) {
 		deleteOptions := metav1.NewDeleteOptions(0)
 		// Use the pod UID as the precondition for deletion to prevent deleting a newly created pod with the same name and namespace.

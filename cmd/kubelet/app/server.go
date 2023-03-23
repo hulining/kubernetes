@@ -190,6 +190,7 @@ HTTP server: The kubelet can also listen for HTTP and respond to a simple API
 			}
 
 			// load kubelet config file, if provided
+			// 1. 加载 kubelet config 配置文件,返回 kubeletConfig 配置文件
 			if configFile := kubeletFlags.KubeletConfigFile; len(configFile) > 0 {
 				kubeletConfig, err = loadConfigFile(configFile)
 				if err != nil {
@@ -240,6 +241,7 @@ HTTP server: The kubelet can also listen for HTTP and respond to a simple API
 			}
 
 			// construct a KubeletServer from kubeletFlags and kubeletConfig
+			// 2. 使用 kubeletConfig 与 kubeletFlags 构造 kubeletServer 对象
 			kubeletServer := &options.KubeletServer{
 				KubeletFlags:         *kubeletFlags,
 				KubeletConfiguration: *kubeletConfig,
@@ -266,6 +268,7 @@ HTTP server: The kubelet can also listen for HTTP and respond to a simple API
 			}
 
 			// run the kubelet
+			// 3. 启动 kubeletServer
 			klog.V(5).Infof("KubeletConfiguration: %#v", kubeletServer.KubeletConfiguration)
 			if err := Run(kubeletServer, kubeletDeps, stopCh); err != nil {
 				klog.Fatal(err)
@@ -549,6 +552,7 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, stopCh <-chan
 		klog.Warningf("standalone mode, no API client")
 
 	case kubeDeps.KubeClient == nil, kubeDeps.EventClient == nil, kubeDeps.HeartbeatClient == nil:
+		// 1. 构建客户端配置以及可以关闭所有连接的方法
 		clientConfig, closeAllConns, err := buildKubeletClientConfig(s, nodeName)
 		if err != nil {
 			return err
@@ -558,11 +562,13 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, stopCh <-chan
 		}
 		kubeDeps.OnHeartbeatFailure = closeAllConns
 
+		// 2. 根据客户端配置构造 KubeClient,也就是 Clientset 对象
 		kubeDeps.KubeClient, err = clientset.NewForConfig(clientConfig)
 		if err != nil {
 			return fmt.Errorf("failed to initialize kubelet client: %v", err)
 		}
 
+		// 3. 为 events 创建一个单独的 EventClient
 		// make a separate client for events
 		eventClientConfig := *clientConfig
 		eventClientConfig.QPS = float32(s.EventRecordQPS)
@@ -572,6 +578,7 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, stopCh <-chan
 			return fmt.Errorf("failed to initialize kubelet event client: %v", err)
 		}
 
+		// 4. 创建 heartbeatClient,用于定时发送 node 的心跳数据
 		// make a separate client for heartbeat with throttling disabled and a timeout attached
 		heartbeatClientConfig := *clientConfig
 		heartbeatClientConfig.Timeout = s.KubeletConfiguration.NodeStatusUpdateFrequency.Duration
@@ -589,6 +596,7 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, stopCh <-chan
 		}
 	}
 
+	// 5. auth 相关
 	if kubeDeps.Auth == nil {
 		auth, err := BuildAuth(nodeName, kubeDeps.KubeClient, s.KubeletConfiguration)
 		if err != nil {
@@ -597,6 +605,7 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, stopCh <-chan
 		kubeDeps.Auth = auth
 	}
 
+	// 6. cgroup 相关
 	var cgroupRoots []string
 
 	cgroupRoots = append(cgroupRoots, cm.NodeAllocatableRoot(s.CgroupRoot, s.CgroupDriver))
@@ -607,6 +616,7 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, stopCh <-chan
 		cgroupRoots = append(cgroupRoots, kubeletCgroup)
 	}
 
+	// runtimeCgroup=/system.slice/docker.service
 	runtimeCgroup, err := cm.GetRuntimeContainer(s.ContainerRuntime, s.RuntimeCgroups)
 	if err != nil {
 		klog.Warningf("failed to get the container runtime's cgroup: %v. Runtime system container metrics may be missing.", err)
@@ -620,6 +630,7 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, stopCh <-chan
 		cgroupRoots = append(cgroupRoots, s.SystemCgroups)
 	}
 
+	// 7. cAdvisor 相关接口,用于监控
 	if kubeDeps.CAdvisorInterface == nil {
 		imageFsInfoProvider := cadvisor.NewImageFsInfoProvider(s.ContainerRuntime, s.RemoteRuntimeEndpoint)
 		kubeDeps.CAdvisorInterface, err = cadvisor.New(imageFsInfoProvider, s.RootDirectory, cgroupRoots, cadvisor.UsingLegacyCadvisorStats(s.ContainerRuntime, s.RemoteRuntimeEndpoint))
@@ -631,6 +642,7 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, stopCh <-chan
 	// Setup event recorder if required.
 	makeEventRecorder(kubeDeps, nodeName)
 
+	// 8. 容器管理器
 	if kubeDeps.ContainerManager == nil {
 		if s.CgroupsPerQOS && s.CgroupRoot == "" {
 			klog.Info("--cgroups-per-qos enabled, but --cgroup-root was not specified.  defaulting to /")
@@ -704,11 +716,13 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, stopCh <-chan
 	utilruntime.ReallyCrash = s.ReallyCrashForTesting
 
 	// TODO(vmarmol): Do this through container config.
+	// 9. 调整 oom_score_adj
 	oomAdjuster := kubeDeps.OOMAdjuster
 	if err := oomAdjuster.ApplyOOMScoreAdj(0, int(s.OOMScoreAdj)); err != nil {
 		klog.Warning(err)
 	}
 
+	// 10. 构建并运行 kubelet 提供服务
 	if err := RunKubelet(s, kubeDeps, s.RunOnce); err != nil {
 		return err
 	}
@@ -721,6 +735,7 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, stopCh <-chan
 		}
 	}
 
+	// 11. 启动用于健康检查的 server,注册 /healthz
 	if s.HealthzPort > 0 {
 		mux := http.NewServeMux()
 		healthz.InstallHandler(mux)
@@ -751,7 +766,9 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, stopCh <-chan
 
 // buildKubeletClientConfig constructs the appropriate client config for the kubelet depending on whether
 // bootstrapping is enabled or client certificate rotation is enabled.
+// Trans: buildKubeletClientConfig 根据是启用了 bootstrapping 还是启用了 client certificate rotation,为kubelet构造适当的客户端配置
 func buildKubeletClientConfig(s *options.KubeletServer, nodeName types.NodeName) (*restclient.Config, func(), error) {
+	// 1. 如果启用了客户端证书滚动
 	if s.RotateCertificates && utilfeature.DefaultFeatureGate.Enabled(features.RotateKubeletClientCertificate) {
 		// Rules for client rotation and the handling of kube config files:
 		//
@@ -771,6 +788,7 @@ func buildKubeletClientConfig(s *options.KubeletServer, nodeName types.NodeName)
 		// bootstrap the cert manager with the contents of the initial client config.
 
 		klog.Infof("Client rotation is on, will bootstrap in background")
+		// 1.1 构造证书相关配置
 		certConfig, clientConfig, err := bootstrap.LoadClientConfig(s.KubeConfig, s.BootstrapKubeconfig, s.CertDirectory)
 		if err != nil {
 			return nil, nil, err
@@ -781,6 +799,7 @@ func buildKubeletClientConfig(s *options.KubeletServer, nodeName types.NodeName)
 
 		kubeClientConfigOverrides(s, clientConfig)
 
+		// 1.2 构造证书管理器
 		clientCertificateManager, err := buildClientCertificateManager(certConfig, clientConfig, s.CertDirectory, nodeName)
 		if err != nil {
 			return nil, nil, err
@@ -797,6 +816,7 @@ func buildKubeletClientConfig(s *options.KubeletServer, nodeName types.NodeName)
 			return nil, nil, err
 		}
 
+		// 1.3 启动证书管理器
 		klog.V(2).Info("Starting client certificate rotation.")
 		clientCertificateManager.Start()
 
@@ -1010,6 +1030,7 @@ func RunKubelet(kubeServer *options.KubeletServer, kubeDeps *kubelet.Dependencie
 		kubeDeps.OSInterface = kubecontainer.RealOS{}
 	}
 
+	// 1. 构建 kubelet 对象,该对象均实现了 Bootstrap 接口,用于引导 kubelet 启动
 	k, err := createAndInitKubelet(&kubeServer.KubeletConfiguration,
 		kubeDeps,
 		&kubeServer.ContainerRuntimeOptions,
@@ -1061,6 +1082,7 @@ func RunKubelet(kubeServer *options.KubeletServer, kubeDeps *kubelet.Dependencie
 		}
 		klog.Info("Started kubelet as runonce")
 	} else {
+		// 2. 启动 Kubelet 及其各个组件
 		startKubelet(k, podCfg, &kubeServer.KubeletConfiguration, kubeDeps, kubeServer.EnableCAdvisorJSONEndpoints, kubeServer.EnableServer)
 		klog.Info("Started kubelet")
 	}
@@ -1118,6 +1140,7 @@ func createAndInitKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 	// TODO: block until all sources have delivered at least one update to the channel, or break the sync loop
 	// up into "per source" synchronizations
 
+	// 1. 构造 Kubelet 对象
 	k, err = kubelet.NewMainKubelet(kubeCfg,
 		kubeDeps,
 		crOptions,
@@ -1155,6 +1178,7 @@ func createAndInitKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 
 	k.BirthCry()
 
+	// 2. 启动容器及镜像的垃圾回收
 	k.StartGarbageCollection()
 
 	return k, nil

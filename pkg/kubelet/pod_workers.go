@@ -172,6 +172,7 @@ func (p *podWorkers) managePodLoop(podUpdates <-chan UpdatePodOptions) {
 				p.recorder.Eventf(update.Pod, v1.EventTypeWarning, events.FailedSync, "error determining status: %v", err)
 				return err
 			}
+			// 最终调用 podWorker 的 syncPodFn 方法来处理 pod 的更新.即 pkg/kubelet/kubelet.goL850 中创建 podworker 时传入的 klet.syncPod 方法
 			err = p.syncPodFn(syncPodOptions{
 				mirrorPod:      update.MirrorPod,
 				pod:            update.Pod,
@@ -217,6 +218,7 @@ func (p *podWorkers) UpdatePod(options *UpdatePodOptions) {
 		// kubelet just restarted. In either case the kubelet is willing to believe
 		// the status of the pod for the first pod worker sync. See corresponding
 		// comment in syncPod.
+		// 启动 goroutine 循环同步 pod 的状态
 		go func() {
 			defer runtime.HandleCrash()
 			p.managePodLoop(podUpdates)

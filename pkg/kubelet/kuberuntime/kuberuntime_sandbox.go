@@ -34,6 +34,7 @@ import (
 )
 
 // createPodSandbox creates a pod sandbox and returns (podSandBoxID, message, error).
+// createPodSandbox 创建并运行 pod sandbox,并返回 sandBox ID
 func (m *kubeGenericRuntimeManager) createPodSandbox(pod *v1.Pod, attempt uint32) (string, string, error) {
 	podSandboxConfig, err := m.generatePodSandboxConfig(pod, attempt)
 	if err != nil {
