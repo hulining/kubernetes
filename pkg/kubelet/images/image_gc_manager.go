@@ -299,6 +299,7 @@ func (im *realImageGCManager) GarbageCollect() error {
 	}
 
 	// If over the max threshold, free enough to place us at the lower threshold.
+	// 当磁盘使用超过 HighThresholdPercent 阈值时,会触发删除镜像,回收磁盘空间的策略.直到磁盘使用率降低到 LowThresholdPercent 以下
 	usagePercent := 100 - int(available*100/capacity)
 	if usagePercent >= im.policy.HighThresholdPercent {
 		amountToFree := capacity*int64(100-im.policy.LowThresholdPercent)/100 - available

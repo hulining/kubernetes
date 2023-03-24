@@ -398,6 +398,7 @@ func (kl *Kubelet) updateNodeStatus() error {
 
 // tryUpdateNodeStatus tries to update node status to master if there is any
 // change or enough time passed from the last sync.
+// Trans: tryUpdateNodeStatus 尝试更新 node 状态到 master
 func (kl *Kubelet) tryUpdateNodeStatus(tryNumber int) error {
 	// In large clusters, GET and PUT operations on Node objects coming
 	// from here are the majority of load on apiserver and etcd.
@@ -430,6 +431,7 @@ func (kl *Kubelet) tryUpdateNodeStatus(tryNumber int) error {
 		}
 	}
 
+	// 调用一系列 setter 函数,配置节点的状态信息.详见 pkg/kubelet/kubelet_node_status.goL531
 	kl.setNodeStatus(node)
 
 	now := kl.clock.Now()
@@ -457,6 +459,7 @@ func (kl *Kubelet) tryUpdateNodeStatus(tryNumber int) error {
 	}
 
 	// Patch the current status on the API server
+	// 将当前状态信息以 patch 方式提交给 apiserver
 	updatedNode, _, err := nodeutil.PatchNodeStatus(kl.heartbeatClient.CoreV1(), types.NodeName(kl.nodeName), originalNode, node)
 	if err != nil {
 		return err
@@ -502,6 +505,7 @@ func (kl *Kubelet) recordNodeSchedulableEvent(node *v1.Node) error {
 // any fields that are currently set.
 // TODO(madhusudancs): Simplify the logic for setting node conditions and
 // refactor the node status condition code out to a different file.
+// Trans: setNodeStatus 使用设置状态的函数列表依次更新节点状态
 func (kl *Kubelet) setNodeStatus(node *v1.Node) {
 	for i, f := range kl.setNodeStatusFuncs {
 		klog.V(5).Infof("Setting node status at position %v", i)
@@ -535,6 +539,8 @@ func (kl *Kubelet) defaultNodeStatusFuncs() []func(*v1.Node) error {
 		validateHostFunc = kl.appArmorValidator.ValidateHost
 	}
 	var setters []func(n *v1.Node) error
+	// kubelet 会将如下信息上报给 master
+	// - 节点地址,机器信息,版本信息,镜像信息,go 版本信息.
 	setters = append(setters,
 		nodestatus.NodeAddress(kl.nodeIP, kl.nodeIPValidator, kl.hostname, kl.hostnameOverridden, kl.externalCloudProvider, kl.cloud, nodeAddressesFunc),
 		nodestatus.MachineInfo(string(kl.nodeName), kl.maxPods, kl.podsPerCore, kl.GetCachedMachineInfo, kl.containerManager.GetCapacity,
@@ -547,6 +553,8 @@ func (kl *Kubelet) defaultNodeStatusFuncs() []func(*v1.Node) error {
 	if utilfeature.DefaultFeatureGate.Enabled(features.AttachVolumeLimit) {
 		setters = append(setters, nodestatus.VolumeLimits(kl.volumePluginMgr.ListVolumePluginWithLimits))
 	}
+	// kubelet 会将如下信息上报给 master
+	// - 内存压力情况,磁盘压力情况,进程压力情况,节点是否就绪情况,Volume使用情况,是否可以被调度
 	setters = append(setters,
 		nodestatus.MemoryPressureCondition(kl.clock.Now, kl.evictionManager.IsUnderMemoryPressure, kl.recordNodeStatusEvent),
 		nodestatus.DiskPressureCondition(kl.clock.Now, kl.evictionManager.IsUnderDiskPressure, kl.recordNodeStatusEvent),
