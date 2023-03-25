@@ -245,11 +245,22 @@ func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 			go openapiController.Run(s.GenericAPIServer.StaticOpenAPISpec, s.GenericAPIServer.OpenAPIVersionedService, context.StopCh)
 		}
 
+		// 负责监控 CRD 对象的变化并动态创建 API Server 中对应的 API 路径和资源对象.
+		// 当用户创建或修改 CRD 时, crdController 将根据 CRD 对象中的定义动态创建相应的 API 路径和资源对象,以便用户可以通过 API Server 访问和操作这些资源对象
 		go crdController.Run(context.StopCh)
+		// 负责为 CRD 对象自动生成名称. 当用户创建 CRD 时,namingController 将根据 CRD 对象中的定义自动生成名称.这样可以避免用户手动命名造成的错误,并确保 CRD 对象的名称唯一
 		go namingController.Run(context.StopCh)
+		// 负责管理 CRD 对象的 establisher 字段
+		// 它会确保这些字段始终准确地反映 CRD 对象所属的 API 扩展程序,并避免因为 establisher 字段不正确而导致的一些问题
 		go establishingController.Run(context.StopCh)
+		// 负责验证用户定义的 CRD 对象中的非结构化字段
+		// 当用户定义 CRD 对象时,如果其中包含非结构化字段,nonStructuralSchemaController 将负责验证这些字段的格式和内容,以确保它们符合 Kubernetes API Server 的要求
 		go nonStructuralSchemaController.Run(5, context.StopCh)
+		// 负责管理 CRD 对象的审核流程
+		// 当用户提交 CRD 对象时,apiApprovalController 将负责审核并批准这些对象.这样可以确保用户创建的 CRD 对象符合 Kubernetes API Server 的规范,并且不会对集群的稳定性造成影响
 		go apiApprovalController.Run(5, context.StopCh)
+		// 负责处理 CRD 对象的终止流程
+		//  当用户删除 CRD 对象时,finalizingController 将负责处理对象的终止流程,包括清理与该对象相关的资源和元数据.这样可以确保 CRD 对象的删除操作能够顺利完成,避免产生不必要的资源泄漏和数据残留
 		go finalizingController.Run(5, context.StopCh)
 		return nil
 	})

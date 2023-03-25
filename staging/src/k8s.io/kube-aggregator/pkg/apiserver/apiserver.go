@@ -206,7 +206,9 @@ func (c completedConfig) NewWithDelegate(delegationTarget genericapiserver.Deleg
 	s.GenericAPIServer.Handler.NonGoRestfulMux.Handle("/apis", apisHandler)
 	s.GenericAPIServer.Handler.NonGoRestfulMux.UnlistedHandle("/apis/", apisHandler)
 
-	// 5. 构建 controller,apiserviceRegistrationController用于负责注册和取消删除API服务,availableController 用于检查已注册服务的可用性.分别在后续的钩子函数中启动
+	// 5. 构建 controller 分别在后续的钩子函数中启动
+	// apiserviceRegistrationController 用于负责注册和取消删除API服务,
+	// availableController 用于检查已注册服务的可用性.并找到可用的 API Service,通过服务发现的方式获取其 endpoints 后,以反向反向代理的方式将相关请求转发到真实的服务上.
 	apiserviceRegistrationController := NewAPIServiceRegistrationController(informerFactory.Apiregistration().V1().APIServices(), s)
 	availableController, err := statuscontrollers.NewAvailableConditionController(
 		informerFactory.Apiregistration().V1().APIServices(),
