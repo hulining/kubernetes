@@ -105,10 +105,12 @@ func (lw *ListWatch) List(options metav1.ListOptions) (runtime.Object, error) {
 	if !lw.DisableChunking {
 		return pager.New(pager.SimplePageFunc(lw.ListFunc)).List(context.TODO(), options)
 	}
+	// 实际上是调用了 client.CoreV1().Pod(namespace).List(options),详见 staging/src/k8s.io/client-go/informers/core/v1/pod.go#L64
 	return lw.ListFunc(options)
 }
 
 // Watch a set of apiserver resources
 func (lw *ListWatch) Watch(options metav1.ListOptions) (watch.Interface, error) {
+	// 实际上是调用了 client.CoreV1().Pods(namespace).Watch(options),详见 staging/src/k8s.io/client-go/informers/core/v1/pod.go#L66
 	return lw.WatchFunc(options)
 }

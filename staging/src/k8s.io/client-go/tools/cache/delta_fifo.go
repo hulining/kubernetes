@@ -93,6 +93,14 @@ func NewDeltaFIFO(keyFunc KeyFunc, knownObjects KeyListerGetter) *DeltaFIFO {
 // items have been deleted when Replace() or Delete() are called. The deleted
 // object will be included in the DeleteFinalStateUnknown markers. These objects
 // could be stale.
+// Trans:  DeltaFIFO 是一个生产者-消费者队列, 该队列的生产者是 Reflector,消费者通过调用该对象的 Pop() 方法进行消费
+// DeltaFIFO 用于处理处理以下 case:
+// - 最多处理一次每个对象更改(delta)
+// - 档处理对象时,想要看到自你上次处理它以来发生的所有事件
+// - 处理对象的删除事件
+// - 定期重新处理对象
+// DeltaFIFO 的 Pop()、Get() 和 GetByKey() 方法返回 interface{} 来满足 Store/Queue 接口,但是它总是返回一个 delta 类型的对象.
+// 相较于 FIFO, DeltaFIFO 中 items 成员变量保存的是 k8s 资源对象的变化
 type DeltaFIFO struct {
 	// lock/cond protects access to 'items' and 'queue'.
 	lock sync.RWMutex
@@ -297,12 +305,14 @@ func isDeletionDup(a, b *Delta) *Delta {
 
 // queueActionLocked appends to the delta list for the object.
 // Caller must lock first.
+// Trans:  queueActionLocked 将对象的变化追加到列表
 func (f *DeltaFIFO) queueActionLocked(actionType DeltaType, obj interface{}) error {
 	id, err := f.KeyOf(obj)
 	if err != nil {
 		return KeyError{obj, err}
 	}
 
+	// 主要是这里
 	newDeltas := append(f.items[id], Delta{actionType, obj})
 	newDeltas = dedupDeltas(newDeltas)
 
@@ -398,6 +408,7 @@ func (f *DeltaFIFO) Pop(process PopProcessFunc) (interface{}, error) {
 	f.lock.Lock()
 	defer f.lock.Unlock()
 	for {
+		// 如果 DeltaFIFO 中的队列没有数据,则会进行阻塞
 		for len(f.queue) == 0 {
 			// When the queue is empty, invocation of Pop() is blocked until new item is enqueued.
 			// When Close() is called, the f.closed is set and the condition is broadcasted.
@@ -408,11 +419,13 @@ func (f *DeltaFIFO) Pop(process PopProcessFunc) (interface{}, error) {
 
 			f.cond.Wait()
 		}
+		// 弹出第一个元素,将元素个数减 1.
 		id := f.queue[0]
 		f.queue = f.queue[1:]
 		if f.initialPopulationCount > 0 {
 			f.initialPopulationCount--
 		}
+		// 从 DeltaFIFO 的 items 字典取出 item,调用 process 进行处理
 		item, ok := f.items[id]
 		if !ok {
 			// Item may have been deleted subsequently.
@@ -445,6 +458,7 @@ func (f *DeltaFIFO) Replace(list []interface{}, resourceVersion string) error {
 			return KeyError{item, err}
 		}
 		keys.Insert(key)
+		// 第一次启动的时候,一般会通过 sync 方式将资源对象重放一遍
 		if err := f.queueActionLocked(Sync, item); err != nil {
 			return fmt.Errorf("couldn't enqueue object: %v", err)
 		}
@@ -508,6 +522,9 @@ func (f *DeltaFIFO) Replace(list []interface{}, resourceVersion string) error {
 }
 
 // Resync will send a sync event for each item
+// 为什么会有 Resync 机制?
+// 在处理 SharedInformer 事件回调时,让处理失败的事件得到重新处理,防止数据丢失
+// 参见 https://github.com/cloudnativeto/sig-kubernetes/issues/11
 func (f *DeltaFIFO) Resync() error {
 	f.lock.Lock()
 	defer f.lock.Unlock()
@@ -516,6 +533,7 @@ func (f *DeltaFIFO) Resync() error {
 		return nil
 	}
 
+	// 列出所有已知的资源对象,可以定位到 knownObjects 是一个 cache.Indexer,实例化的对象是 cache.cache.其中, cache.cache 是通过 threadSafeMap 实现的
 	keys := f.knownObjects.ListKeys()
 	for _, k := range keys {
 		if err := f.syncKeyLocked(k); err != nil {

@@ -293,6 +293,7 @@ type deleteNotification struct {
 func (s *sharedIndexInformer) Run(stopCh <-chan struct{}) {
 	defer utilruntime.HandleCrash()
 
+	// 实例化 DeltaFIFO 对象,并将其传到到 Config 对象中
 	fifo := NewDeltaFIFO(MetaNamespaceKeyFunc, s.indexer)
 
 	cfg := &Config{
@@ -310,6 +311,7 @@ func (s *sharedIndexInformer) Run(stopCh <-chan struct{}) {
 		s.startedLock.Lock()
 		defer s.startedLock.Unlock()
 
+		// 通过上述的 Config 对象创建 controller 对象
 		s.controller = New(cfg)
 		s.controller.(*controller).clock = s.clock
 		s.started = true
@@ -328,6 +330,7 @@ func (s *sharedIndexInformer) Run(stopCh <-chan struct{}) {
 		defer s.startedLock.Unlock()
 		s.stopped = true // Don't want any new listeners
 	}()
+	// 该对象运行的时候会创建 Reflector 对象
 	s.controller.Run(stopCh)
 }
 
@@ -445,6 +448,7 @@ func (s *sharedIndexInformer) AddEventHandlerWithResyncPeriod(handler ResourceEv
 	}
 }
 
+// Informer 处理 Deltas 的函数.
 func (s *sharedIndexInformer) HandleDeltas(obj interface{}) error {
 	s.blockDeltas.Lock()
 	defer s.blockDeltas.Unlock()
@@ -453,6 +457,10 @@ func (s *sharedIndexInformer) HandleDeltas(obj interface{}) error {
 	for _, d := range obj.(Deltas) {
 		switch d.Type {
 		case Sync, Added, Updated:
+			// 对于 Sync,Added,Updated 方式的变更,会将其
+			// 1. 添加或更新到 informer 的 indexer 中
+			// 2. 交给 processor 将事件进行分发&通知,将事件通知对象发送到对应的 channel 中,
+			//    该 channel 会被 Informer 启动前的 AddEventHandler 所消费,并对事件做出对应的处理
 			isSync := d.Type == Sync
 			s.cacheMutationDetector.AddObject(d.Object)
 			if old, exists, err := s.indexer.Get(d.Object); err == nil && exists {
@@ -467,6 +475,7 @@ func (s *sharedIndexInformer) HandleDeltas(obj interface{}) error {
 				s.processor.distribute(addNotification{newObj: d.Object}, isSync)
 			}
 		case Deleted:
+			// 对于 Deleted 方式的变更,会将其从 informer 的 indexer 中删除
 			if err := s.indexer.Delete(d.Object); err != nil {
 				return err
 			}

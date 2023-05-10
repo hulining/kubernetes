@@ -119,6 +119,7 @@ var internalPackages = []string{"client-go/tools/cache/"}
 func (r *Reflector) Run(stopCh <-chan struct{}) {
 	klog.V(3).Infof("Starting reflector %v (%s) from %s", r.expectedType, r.resyncPeriod, r.name)
 	wait.Until(func() {
+		// 通过调用 ListAndWathc 方法 list & watch 资源对象的变化
 		if err := r.ListAndWatch(stopCh); err != nil {
 			utilruntime.HandleError(err)
 		}
@@ -154,6 +155,7 @@ func (r *Reflector) resyncChan() (<-chan time.Time, func() bool) {
 // ListAndWatch first lists all items and get the resource version at the moment of call,
 // and then use the resource version to watch.
 // It returns error if ListAndWatch didn't even try to initialize watch.
+// Trans: ListAndWatch 首先列出所有 items 对象,并在调用时获取其资源版本,然后对资源对象进行 watch,并作出相应的处理
 func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 	klog.V(3).Infof("Listing and watching %v from %s", r.expectedType, r.name)
 	var resourceVersion string
@@ -179,12 +181,14 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 			// Attempt to gather list in chunks, if supported by listerWatcher, if not, the first
 			// list request will return the full response.
 			pager := pager.New(pager.SimplePageFunc(func(opts metav1.ListOptions) (runtime.Object, error) {
+				// 实际上是调用了 client.CoreV1().Pod(namespace).List(options) 来实现的
 				return r.listerWatcher.List(opts)
 			}))
 			if r.WatchListPageSize != 0 {
 				pager.PageSize = r.WatchListPageSize
 			}
 			// Pager falls back to full list if paginated list calls fail due to an "Expired" error.
+			// pager.List() 会回调上面的 r.listerWatcher.List(opts) 函数
 			list, err = pager.List(context.Background(), options)
 			close(listCh)
 		}()
@@ -198,6 +202,7 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 		if err != nil {
 			return fmt.Errorf("%s: Failed to list %v: %v", r.name, r.expectedType, err)
 		}
+		// 获取并更新 SyncResourceVersion
 		initTrace.Step("Objects listed")
 		listMetaInterface, err := meta.ListAccessor(list)
 		if err != nil {
@@ -210,6 +215,7 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 			return fmt.Errorf("%s: Unable to understand list result %#v (%v)", r.name, list, err)
 		}
 		initTrace.Step("Objects extracted")
+		// 将前面的数据放到 DeltaFIFO
 		if err := r.syncWith(items, resourceVersion); err != nil {
 			return fmt.Errorf("%s: Unable to sync list result: %v", r.name, err)
 		}
@@ -225,6 +231,7 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 	cancelCh := make(chan struct{})
 	defer close(cancelCh)
 	go func() {
+		// 返回一个计时器的 channel,用于在指定时间周期内进行 resync
 		resyncCh, cleanup := r.resyncChan()
 		defer func() {
 			cleanup() // Call the last one written into cleanup
@@ -237,6 +244,7 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 			case <-cancelCh:
 				return
 			}
+			// 只有计时器 resyncCh 有数据时,才会执行 resync
 			if r.ShouldResync == nil || r.ShouldResync() {
 				klog.V(4).Infof("%s: forcing resync", r.name)
 				if err := r.store.Resync(); err != nil {
@@ -271,6 +279,7 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 
 		// start the clock before sending the request, since some proxies won't flush headers until after the first watch event is sent
 		start := r.clock.Now()
+		// 实际是调用了 client.CoreV1().Pod(namespace).Watch(options) 来实现的
 		w, err := r.listerWatcher.Watch(options)
 		if err != nil {
 			switch err {
@@ -292,6 +301,7 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 			return nil
 		}
 
+		// 对 watch 到的数据进行处理
 		if err := r.watchHandler(start, w, &resourceVersion, resyncerrc, stopCh); err != nil {
 			if err != errorStopRequested {
 				switch {
@@ -331,6 +341,7 @@ loop:
 		case err := <-errc:
 			return err
 		case event, ok := <-w.ResultChan():
+			// 得到资源事件对象之后,对其进行处理
 			if !ok {
 				break loop
 			}
@@ -347,6 +358,7 @@ loop:
 				continue
 			}
 			newResourceVersion := meta.GetResourceVersion()
+			// 将资源对象 添加到 store | 更新 | 从 store 中删除 等操作
 			switch event.Type {
 			case watch.Added:
 				err := r.store.Add(event.Object)
